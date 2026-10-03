@@ -15,10 +15,65 @@
     MAX_BYTES: 5 * 1024 * 1024,
     ACCEPT: ["image/png", "image/jpeg", "image/webp"],
     HISTORY_MAX: 30,
-    KEYS: { apiKey: "tradeia:apiKey", model: "tradeia:model", history: "tradeia:history", risk: "tradeia:risk" },
+    KEYS: { apiKey: "tradeia:apiKey", model: "tradeia:model", history: "tradeia:history", risk: "tradeia:risk", style: "tradeia:style", mode: "tradeia:mode", macroManual: "tradeia:macro:manual", macroCache: "tradeia:macro:cache" },
   };
 
-  const SYSTEM_PROMPT = `Tu es un trader intraday senior spécialisé en Price Action et Smart Money Concepts (SMC), sur crypto, forex, indices et actions. Tu analyses UNE capture d'écran de graphique en chandeliers japonais et tu produis un plan d'exécution COURT TERME : réactif, serré et exploitable immédiatement.
+  /* ---------- Styles de trading : calibrent l'horizon du plan ---------- */
+  const STYLES = {
+    scalp: {
+      label: "Scalping",
+      tf: "1m – 5m",
+      hint: "Exécution ultra-réactive, stop très serré, cibles de liquidité immédiate.",
+      gapMax: 1.5,
+      prompt: `# STYLE DEMANDÉ : SCALPING (1m – 5m)
+- Horizon : quelques minutes à une heure au maximum. Le trade doit pouvoir être ouvert et clôturé dans la session en cours.
+- Si l'image montre une unité de temps supérieure, elle ne sert qu'au biais : le plan vise la toute prochaine réaction du prix.
+- Construis le plan sur les 15 à 30 dernières bougies uniquement.
+- Entrée : "Market" ou un prix limite collé au prix actuel (retest immédiat de la micro-zone).
+- Stop : très serré, juste derrière la mèche de la dernière bougie de rejet ou du micro-swing, soit environ 1 à 2 bougies moyennes.
+- TP1 : la liquidité immédiate (dernier micro-sommet ou micro-creux). TP2 : la poche de liquidité suivante, au plus 2 fois la distance entrée-TP1.`,
+    },
+    day: {
+      label: "Day trading",
+      tf: "15m – 1h",
+      hint: "Équilibré : sessions, retests de structures locales, issue dans la journée.",
+      gapMax: 1.5,
+      prompt: `# STYLE DEMANDÉ : DAY TRADING / INTRADAY (15m – 1h)
+- Horizon : exécution et issue dans la journée, jamais un swing de plusieurs jours.
+- Tiens compte des sessions (Asie, Londres, New York) : hauts et bas de session et ouvertures de Londres ou de New York sont des zones de liquidité.
+- Sur 4h ou Daily, l'unité de temps ne sert qu'au contexte : le plan cherche la réaction sur les niveaux les plus proches du prix actuel.
+- Construis le plan sur les 20 à 40 dernières bougies.
+- Entrée : "Market" si le prix est déjà dans la zone, sinon le retest immédiat de la structure locale la plus proche.
+- Stop : juste derrière la dernière invalidation locale (mèche du dernier swing, du sweep ou bord de l'order block), soit environ 1 à 3 bougies moyennes.
+- TP1 : première poche de liquidité locale (prochain sommet ou creux, haut ou bas de session). TP2 : extension logique suivante, au plus 2 à 3 fois la distance entrée-TP1.`,
+    },
+    swing: {
+      label: "Swing",
+      tf: "4h – Daily",
+      hint: "Suivi de la tendance de fond, objectifs sur plusieurs jours.",
+      gapMax: 3,
+      prompt: `# STYLE DEMANDÉ : SWING TRADING (4h – Daily)
+- Horizon : plusieurs jours à quelques semaines, dans le sens de la tendance de fond.
+- Priorité au biais macro : structure 4h et Daily, zones de premium et de discount du dernier grand swing, order blocks et FVG HTF.
+- Entrée : sur la zone HTF la plus proche du prix actuel, dans le sens de la tendance. La distance prix actuel-entrée ne doit pas dépasser 2 fois la distance entrée-stop.
+- Stop : derrière le swing structurel HTF qui invalide le scénario, pas derrière une simple mèche intraday.
+- TP1 : prochaine liquidité HTF (sommet ou creux de swing). TP2 : objectif de tendance suivant (liquidité majeure ou extension), cohérent avec la structure.`,
+    },
+  };
+
+  const MTF_PROMPT = `# MODE MULTI-TIMEFRAME (2 IMAGES)
+- Image 1 = HTF (vue d'ensemble) : détermine le biais et les zones majeures.
+- Image 2 = LTF (déclencheur) : sert à construire l'entrée, le stop et les objectifs.
+- current_price, entry_price, stop_loss, take_profit_1 et take_profit_2 sont lus sur l'image LTF.
+- Vérifie la confluence : le setup LTF doit aller dans le sens du biais HTF, ou réagir sur une zone HTF clé. En cas de conflit HTF/LTF, recommande "WAIT" et explique le conflit.
+- timeframe_detected indique les deux unités de temps au format "HTF / LTF" (ex : "4h / 15m").
+- Le "rationale" commence par une phrase sur l'alignement HTF/LTF.
+- Si les deux images ne montrent pas le même actif, réponds avec l'erreur NOT_A_CHART en expliquant pourquoi.`;
+
+  /** Construit le prompt système selon le style choisi et le mode (1 ou 2 images). */
+  function buildSystemPrompt(styleId, multi) {
+    const style = STYLES[styleId] || STYLES.day;
+    return `Tu es un trader senior spécialisé en Price Action et Smart Money Concepts (SMC), sur crypto, forex, indices et actions. Tu analyses ${multi ? "DEUX captures d'écran du même actif sur deux unités de temps" : "UNE capture d'écran de graphique en chandeliers japonais"} et tu produis un plan d'exécution calibré sur le style de trading demandé.
 
 # FORMAT DE SORTIE (OBLIGATOIRE)
 - Réponds UNIQUEMENT avec un objet JSON valide. Aucun texte avant ou après, aucune balise markdown, aucun \`\`\`.
@@ -27,8 +82,8 @@
 
 Structure exacte :
 {
-  "asset_detected": "string (ex: BTC/USDT, EUR/USD, NVDA, ou \"Inconnu\")",
-  "timeframe_detected": "string (ex: 5m, 15m, 1h, 4h, Daily, ou \"Inconnu\")",
+  "asset_detected": "string (ex: BTC/USDT, EUR/USD, NVDA, ou \\"Inconnu\\")",
+  "timeframe_detected": "string (ex: 5m, 15m, 1h, 4h, Daily, ou \\"Inconnu\\")",
   "current_price": number (dernier prix visible : clôture de la dernière bougie ou étiquette de prix sur l'axe),
   "trend": "Bullish" | "Bearish" | "Neutral",
   "key_patterns": ["string"],
@@ -50,42 +105,27 @@ Structure exacte :
 Si l'image n'est PAS un graphique de prix exploitable (photo, texte, graphique illisible, aucune échelle de prix visible), réponds exactement :
 {"error": "NOT_A_CHART", "message": "<raison courte en français>"}
 
-# HORIZON : INTRADAY / COURT TERME (PRIORITAIRE)
-- Le plan vise une exécution et une issue dans les heures qui suivent, jamais un swing de plusieurs jours ou semaines.
-- Sur 1m, 5m, 15m ou 1h : trade directement la structure visible.
-- Sur 4h, Daily ou plus : utilise l'unité de temps uniquement pour le contexte et le biais. Le plan cherche la réaction immédiate sur les niveaux les plus proches du prix actuel, pas un mouvement macro.
-- Ignore les swings lointains (creux ou sommets anciens, zones éloignées du prix) pour placer l'entrée, le stop ou les objectifs. Seule la partie droite du graphique (les 20 à 40 dernières bougies) sert à construire le plan.
-
+${style.prompt}
+${multi ? `\n${MTF_PROMPT}\n` : ""}
 # MÉTHODE D'ANALYSE (dans cet ordre)
 1. Prix actuel : repère le dernier prix (dernière bougie, étiquette sur l'axe de droite). C'est la référence de tout le plan ; renseigne-le dans "current_price".
 2. Contexte : actif, unité de temps et échelle de prix lus sur l'image. Si une information n'est pas lisible, écris "Inconnu" plutôt que de deviner.
-3. Structure locale : derniers sommets et creux (HH/HL haussier, LH/LL baissier), BOS et CHoCH récents. Une cassure n'est valide que si une bougie CLÔTURE au-delà du niveau, pas une simple mèche.
-4. Cassures et retests récents : cassure d'un niveau proche, retest en cours, tenu ou échoué.
-5. Liquidité proche : equal highs/lows, sommets et creux locaux, sweep récent suivi d'une réintégration.
-6. Zones institutionnelles proches du prix : order blocks et fair value gaps situés à portée immédiate.
+3. Structure : sommets et creux (HH/HL haussier, LH/LL baissier), BOS et CHoCH. Une cassure n'est valide que si une bougie CLÔTURE au-delà du niveau, pas une simple mèche.
+4. Cassures et retests : cassure d'un niveau, retest en cours, tenu ou échoué.
+5. Liquidité : equal highs/lows, sommets et creux évidents, sweep suivi d'une réintégration.
+6. Zones institutionnelles : order blocks et fair value gaps à portée, adaptés à l'horizon du style.
 7. Rejets de mèches et figures de bougies sur ces niveaux.
 8. Indicateurs visibles uniquement : n'invente jamais un indicateur absent de l'image.
 
-# CONSTRUCTION DU PLAN (NON NÉGOCIABLE)
-Entrée réactive
-- entry_price est au plus près du prix actuel : "Market" si le prix est déjà dans la zone d'entrée, sinon un prix limite sur le retest immédiat de la zone la plus proche.
-- La distance entre current_price et entry_price ne doit jamais dépasser la distance entre entry_price et stop_loss. Si le seul setup valable exige un repli plus profond, recommande "WAIT".
-
-Stop serré (tight invalidation)
-- stop_loss se place juste derrière la dernière invalidation locale : mèche du dernier swing, mèche du sweep ou bord opposé de l'order block d'entrée, avec une petite marge.
-- Jamais derrière un creux ou sommet macro éloigné. Repère : la distance entrée-stop reste de l'ordre de 1 à 3 fois la taille moyenne des bougies récentes.
-
-Objectifs proches
-- take_profit_1 vise la première poche de liquidité immédiate : prochain sommet ou creux local, bord du FVG opposé. Il sert à sécuriser vite le trade.
-- take_profit_2 vise l'extension logique suivante (liquidité locale suivante), sans niveau démesuré : au plus environ 2 à 3 fois la distance entrée-TP1.
-
-Cohérence
+# RÈGLES DU PLAN (NON NÉGOCIABLES)
+- Respecte strictement l'horizon, l'entrée, le stop et les objectifs définis par le style demandé ci-dessus.
+- Sauf indication contraire du style, la distance entre current_price et entry_price ne dépasse jamais la distance entre entry_price et stop_loss. Si le seul setup valable exige un repli plus profond, recommande "WAIT".
 - BUY : stop_loss < entry_price < take_profit_1 < take_profit_2.
 - SELL : stop_loss > entry_price > take_profit_1 > take_profit_2.
 - Avec "Market", ces règles s'appliquent par rapport à current_price.
 - Le ratio risque/rendement vers take_profit_1 doit être d'au moins 1:1,5. Sinon, recommande "WAIT".
 - risk_reward_ratio est calculé vers take_profit_2 : |TP2 - entrée| / |entrée - SL|, arrondi à une décimale, au format "1:X".
-- Recommande "WAIT" si : range sans biais, signaux contradictoires, prix loin de toute zone clé, ou setup non confirmé. Fournis alors un plan CONDITIONNEL, toujours au plus près du prix actuel, et précise la condition de déclenchement dans "rationale".
+- Recommande "WAIT" si : range sans biais, signaux contradictoires, prix loin de toute zone clé, ou setup non confirmé. Fournis alors un plan CONDITIONNEL, au plus près du prix actuel, et précise la condition de déclenchement dans "rationale".
 
 # CALIBRATION DE LA CONFIANCE
 - 80-100 : confluence forte (structure + liquidité + zone institutionnelle + confirmation bougie), R:R ≥ 1:2.
@@ -95,14 +135,36 @@ Cohérence
 Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de temps est inconnue, ou si peu de bougies sont visibles.
 
 # RÉDACTION DU "rationale"
-4 à 8 phrases, factuelles et précises : prix actuel et structure locale, déclencheur, logique du stop serré, cibles TP1 et TP2, puis le scénario d'invalidation. Pas de promesse de gain, pas de langage émotionnel.`;
+4 à 8 phrases, factuelles et précises : prix actuel et structure, déclencheur, logique du stop, cibles TP1 et TP2, puis le scénario d'invalidation. Pas de promesse de gain, pas de langage émotionnel.`;
+  }
+
   const USER_PROMPT = "Analyse ce graphique et renvoie uniquement le JSON demandé.";
+  const USER_PROMPT_MTF =
+    "Image 1 = HTF (vue d'ensemble), image 2 = LTF (déclencheur). Analyse la confluence entre les deux et renvoie uniquement le JSON demandé.";
+
+  /* ---------- Journal de trading ---------- */
+  const STATUSES = {
+    pending: { label: "En attente", cls: "text-zinc-300" },
+    open: { label: "En cours", cls: "text-accent" },
+    tp1: { label: "TP1 touché", cls: "text-[#34d399]" },
+    tp2: { label: "TP2 touché", cls: "text-[#34d399]" },
+    sl: { label: "Stoppé (SL)", cls: "text-[#fb7185]" },
+    cancelled: { label: "Annulé", cls: "text-zinc-500" },
+  };
+
+  const CHECKLIST = [
+    "Structure de marché alignée (BOS/CHoCH validé en clôture)",
+    "Sweep de liquidité visible (rejet de mèche net)",
+    "Retest propre d’un order block ou d’un FVG",
+    "Ratio R:R supérieur ou égal à 1:2",
+    "Aucune annonce macroéconomique majeure imminente",
+  ];
 
   const TABS = [
     { id: "accueil", label: "Accueil", icon: "house" },
     { id: "analyseur", label: "Analyseur", icon: "scan-line" },
     { id: "methode", label: "Stratégie & méthode", icon: "book-open" },
-    { id: "historique", label: "Historique", icon: "history" },
+    { id: "historique", label: "Journal", icon: "notebook-pen" },
   ];
   const FLOW = ["Contexte", "Structure", "Cassures", "Liquidité", "OB & FVG", "Bougies", "Indicateurs"];
   const TIPS = [
@@ -314,7 +376,8 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
     return e === "Market" ? (a.current_price ?? null) : e;
   }
 
-  function checkTradePlan(a) {
+  function checkTradePlan(a, styleId = "day") {
+    const gapMax = (STYLES[styleId] || STYLES.day).gapMax;
     const w = [];
     const { entry_price, stop_loss: sl, take_profit_1: tp1, take_profit_2: tp2 } = a.trade_plan;
     const entry = effectiveEntry(a);
@@ -337,7 +400,7 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
     if (cur != null && entry_price !== "Market") {
       const risk = Math.abs(entry_price - sl);
       const gap = Math.abs(entry_price - cur);
-      if (risk > 0 && gap > risk * 1.5) {
+      if (risk > 0 && gap > risk * gapMax) {
         w.push(`Entrée éloignée du prix actuel (${((gap / cur) * 100).toFixed(2)} %) : setup peu réactif, l’ordre risque de ne pas être exécuté.`);
       }
     }
@@ -400,20 +463,20 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
     });
   }
 
-  async function analyzeImage(file) {
+  /** Envoie 1 image, ou 2 images (HTF puis LTF) avec leurs libellés, au modèle vision. */
+  async function analyzeImages(images, styleId, multi) {
+    const content = [];
+    for (const img of images) {
+      if (img.label) content.push({ type: "text", text: img.label });
+      content.push({ type: "image", source: { type: "base64", media_type: img.file.type, data: await fileToBase64(img.file) } });
+    }
+    content.push({ type: "text", text: multi ? USER_PROMPT_MTF : USER_PROMPT });
+
     const data = await callClaude({
       model: getModel(),
       max_tokens: 2000,
-      system: SYSTEM_PROMPT,
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "image", source: { type: "base64", media_type: file.type, data: await fileToBase64(file) } },
-            { type: "text", text: USER_PROMPT },
-          ],
-        },
-      ],
+      system: buildSystemPrompt(styleId, multi),
+      messages: [{ role: "user", content }],
     });
     const text = (data && Array.isArray(data.content) ? data.content : [])
       .filter((b) => b.type === "text")
@@ -425,7 +488,7 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
       throw new AppError(typeof json.message === "string" ? json.message : "Cette image n’est pas un graphique exploitable.", "NOT_A_CHART");
     }
     const analysis = validateAnalysis(json);
-    return { analysis, warnings: checkTradePlan(analysis) };
+    return { analysis, warnings: checkTradePlan(analysis, styleId) };
   }
 
   /** Requête minimale (1 token) : valide la clé ET le nom du modèle. */
@@ -454,8 +517,10 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
    * ========================================================= */
   const state = {
     tab: "accueil",
-    file: null,
-    previewUrl: null,
+    style: "day", // scalp | day | swing
+    mode: "single", // single | mtf
+    slots: { main: null, htf: null, ltf: null },
+    pickSlot: null,
     status: "idle", // idle | ready | loading | done | error
     result: null,
     error: null,
@@ -464,6 +529,7 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
     loaderStart: 0,
     history: [],
     demo: "BUY",
+    macro: { auto: [], manual: [], source: "loading" },
   };
 
   /* =========================================================
@@ -668,6 +734,8 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
                 ${badge(esc(a.asset_detected), "border-white/[0.1] bg-white/[0.05] text-fg")}
                 ${badge(esc(a.timeframe_detected))}
                 ${badge(`${icon(t.icon, "size-3")} ${t.label}`)}
+                ${meta.style && STYLES[meta.style] ? badge(`${icon("gauge", "size-3")} ${STYLES[meta.style].label}`, "border-accent/25 bg-accent/[0.08] text-accent") : ""}
+                ${meta.mode === "mtf" ? badge(`${icon("layers", "size-3")} Multi-TF`, "border-accent/25 bg-accent/[0.08] text-accent") : ""}
               </div>
               <div class="mt-6 flex flex-wrap items-center gap-5">
                 <span class="verdict-pill rounded-2xl border px-6 py-2.5 font-mono text-5xl font-semibold tracking-tight sm:text-6xl ${d.pill}">${a.recommendation}</span>
@@ -734,6 +802,8 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
             <p class="mt-4 font-mono text-xs text-zinc-600">$ <span class="caret"></span></p>
           </div>
         </div>
+
+        ${meta.entryId ? checklistHtml(meta.entryId) : ""}
       </div>`;
   }
 
@@ -1001,8 +1071,94 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
   }
 
   /* =========================================================
-   * Rendu : analyseur
+   * Rendu : analyseur (style, mode 1 ou 2 images, slots)
    * ========================================================= */
+  const SLOT_META = {
+    main: { label: "Graphique", sub: "Dépose ta capture de graphique ici" },
+    htf: { label: "HTF · Vue d’ensemble", sub: "Tendance de fond (ex : 4h, Daily)" },
+    ltf: { label: "LTF · Déclencheur", sub: "Entrée et retest (ex : 5m, 15m)" },
+  };
+  const activeSlots = () => (state.mode === "mtf" ? ["htf", "ltf"] : ["main"]);
+  const loadedSlots = () => activeSlots().filter((k) => state.slots[k]);
+  const hasAnyFile = () => loadedSlots().length > 0;
+  const isComplete = () => loadedSlots().length === activeSlots().length;
+
+  function renderPickers() {
+    $("#style-picker").innerHTML = Object.entries(STYLES)
+      .map(
+        ([id, s]) => `
+        <button type="button" role="radio" data-style="${id}" aria-checked="${state.style === id}" ${state.status === "loading" ? "disabled" : ""}
+          class="seg-btn flex-1 rounded-lg px-3 py-2 text-left transition-all duration-200">
+          <span class="block text-sm font-medium">${s.label}</span>
+          <span class="block font-mono text-[11px] text-zinc-500">${s.tf}</span>
+        </button>`,
+      )
+      .join("");
+    $("#style-hint").textContent = STYLES[state.style].hint;
+    $("#mode-picker").innerHTML = [
+      ["single", "1 image", "image"],
+      ["mtf", "2 images · Multi-TF", "images"],
+    ]
+      .map(
+        ([id, label, ico]) => `
+        <button type="button" role="radio" data-mode="${id}" aria-checked="${state.mode === id}" ${state.status === "loading" ? "disabled" : ""}
+          class="seg-btn flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-medium transition-all duration-200">
+          ${icon(ico, "size-3.5")} ${label}
+        </button>`,
+      )
+      .join("");
+  }
+
+  function dropzoneHtml(key, big) {
+    const m = SLOT_META[key];
+    return `
+      <div class="dropzone group relative flex ${big ? "min-h-[400px]" : "min-h-[320px]"} cursor-pointer flex-col items-center justify-center gap-4 rounded-2xl px-5 text-center"
+           role="button" tabindex="0" data-slot="${key}" aria-label="Importer : ${m.label}">
+        <svg class="pointer-events-none absolute inset-0 size-full overflow-visible" aria-hidden="true">
+          <rect class="dz-rect" x="1" y="1" width="0" height="0" rx="15" ry="15" />
+        </svg>
+        ${key === "main" ? "" : `<span class="absolute left-4 top-4 rounded-md border border-white/[0.08] bg-white/[0.04] px-2 py-0.5 text-[11px] font-medium text-zinc-300">${m.label}</span>`}
+        <div class="dz-icon grid size-14 place-items-center rounded-2xl border border-white/[0.08] bg-panel">${icon("image-up", "size-6 text-accent")}</div>
+        <div>
+          <p class="${big ? "text-lg" : "text-base"} font-medium tracking-tight">${key === "main" ? m.sub : "Dépose la capture"}</p>
+          <p class="mt-1.5 text-sm text-zinc-500">${key === "main" ? "ou clique pour parcourir tes fichiers" : m.sub}</p>
+        </div>
+        <button type="button" data-action="paste-clipboard" data-slot="${key}"
+                class="paste-hint inline-flex items-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.03] py-1.5 pl-1.5 pr-3 text-xs text-zinc-400 transition-all duration-200 hover:border-[#06b6d4]/40 hover:text-zinc-200"
+                title="Coller depuis le presse-papier">
+          <span class="flex items-center gap-1"><kbd class="kbd">${MOD_KEY}</kbd><span class="text-zinc-600">+</span><kbd class="kbd">V</kbd></span>
+          pour coller
+        </button>
+        <p class="font-mono text-[11px] text-zinc-600">PNG · JPG · WEBP — 5 Mo max</p>
+      </div>`;
+  }
+
+  function previewHtml(key) {
+    const s = state.slots[key];
+    return `
+      <div class="slot-preview relative overflow-hidden rounded-2xl border border-white/[0.08] bg-black/40">
+        <img src="${s.url}" alt="${esc(SLOT_META[key].label)}" class="slot-img block max-h-[520px] w-full object-contain transition-opacity duration-300" />
+        <div class="scan-overlay">
+          <div class="pointer-events-none absolute inset-0 bg-[#06b6d4]/[0.04]"></div>
+          <div class="scan-grid pointer-events-none absolute inset-0"></div>
+          <div class="scan-beam pointer-events-none"></div>
+        </div>
+        ${key === "main" ? "" : `<span class="absolute left-3 top-3 rounded-md border border-white/[0.1] bg-black/60 px-2 py-0.5 text-[11px] font-medium text-zinc-200 backdrop-blur-md">${SLOT_META[key].label}</span>`}
+        <button type="button" data-action="remove-slot" data-slot="${key}" class="slot-remove absolute right-3 top-3 grid size-8 place-items-center rounded-lg border border-white/[0.1] bg-black/60 text-zinc-300 backdrop-blur-md transition hover:text-[#fb7185]" aria-label="Retirer cette image">
+          ${icon("x", "size-4")}
+        </button>
+      </div>`;
+  }
+
+  /** Re-rendu des zones d'image (uniquement quand les fichiers ou le mode changent : pas de clignotement). */
+  function renderSlots() {
+    const keys = activeSlots();
+    $("#slots").className = keys.length === 2 ? "grid gap-4 md:grid-cols-2" : "";
+    $("#slots").innerHTML = keys.map((k) => (state.slots[k] ? previewHtml(k) : dropzoneHtml(k, keys.length === 1))).join("");
+    observeDropzones();
+    refreshIcons();
+  }
+
   function loaderStepsHtml() {
     return LOADER_STEPS.map((s, i) => {
       const ico =
@@ -1021,7 +1177,7 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
   const elapsedSec = () => Math.floor((Date.now() - state.loaderStart) / 1000);
 
   function renderSide() {
-    if (!state.file) {
+    if (!hasAnyFile()) {
       const keyNotice = getApiKey()
         ? ""
         : `<div class="mt-5 rounded-lg border border-wait/25 bg-wait/[0.05] p-3 text-sm">
@@ -1034,43 +1190,56 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
         ${keyNotice}`;
     }
 
-    const action =
-      state.status === "loading"
-        ? `<div id="loader" class="space-y-4" role="status" aria-live="polite">
-            <div class="flex items-center justify-between text-xs">
-              <span class="flex items-center gap-2 text-accent"><span class="pulse-dot bg-accent"></span>Analyse en cours</span>
-              <span id="loader-elapsed" class="font-mono text-zinc-500">${elapsedSec()} s</span>
+    const missing = activeSlots().filter((k) => !state.slots[k]);
+    let action;
+    if (state.status === "loading") {
+      action = `<div id="loader" class="space-y-4" role="status" aria-live="polite">
+          <div class="flex items-center justify-between text-xs">
+            <span class="flex items-center gap-2 text-accent"><span class="pulse-dot bg-accent"></span>Analyse en cours</span>
+            <span id="loader-elapsed" class="font-mono text-zinc-500">${elapsedSec()} s</span>
+          </div>
+          <div class="h-1 overflow-hidden rounded-full bg-white/[0.05]">
+            <div id="loader-bar" class="h-full rounded-full bg-linear-to-r from-buy to-accent transition-[width] duration-700 ease-out" style="width:${loaderPct()}%"></div>
+          </div>
+          <ol id="loader-steps" class="space-y-3">${loaderStepsHtml()}</ol>
+        </div>`;
+    } else if (missing.length) {
+      action = `<button disabled class="btn-outline h-12 w-full px-6 text-sm">${icon("image-plus", "size-4")} Ajoute l’image ${missing[0].toUpperCase()}</button>`;
+    } else {
+      action = `<button data-action="analyze" class="btn-primary shimmer h-12 w-full px-6 text-base">${icon("scan-line", "size-5")}
+          ${state.status === "error" ? "Relancer l’analyse" : state.status === "done" ? "Analyser à nouveau" : "Analyser le graphique"}
+        </button>`;
+    }
+
+    const files = loadedSlots()
+      .map((k) => {
+        const f = state.slots[k].file;
+        return `
+          <div class="flex items-center gap-3">
+            <div class="grid size-10 shrink-0 place-items-center rounded-lg border border-white/[0.08] bg-ink">${icon("file-image", "size-4 text-accent")}</div>
+            <div class="min-w-0">
+              <p class="truncate text-sm font-medium">${state.mode === "mtf" ? `<span class="text-zinc-500">${k.toUpperCase()} ·</span> ` : ""}${esc(f.name || "Capture collée")}</p>
+              <p class="font-mono text-xs text-zinc-500">${formatBytes(f.size)}</p>
             </div>
-            <div class="h-1 overflow-hidden rounded-full bg-white/[0.05]">
-              <div id="loader-bar" class="h-full rounded-full bg-linear-to-r from-buy to-accent transition-[width] duration-700 ease-out" style="width:${loaderPct()}%"></div>
-            </div>
-            <ol id="loader-steps" class="space-y-3">${loaderStepsHtml()}</ol>
-          </div>`
-        : `<button data-action="analyze" class="btn-primary shimmer h-12 w-full px-6 text-base">${icon("scan-line", "size-5")}
-            ${state.status === "error" ? "Relancer l’analyse" : state.status === "done" ? "Analyser à nouveau" : "Analyser le graphique"}
-          </button>`;
+          </div>`;
+      })
+      .join("");
 
     return `
       <div class="space-y-5">
-        <div class="flex items-center gap-3">
-          <div class="grid size-10 shrink-0 place-items-center rounded-lg border border-white/[0.08] bg-ink">${icon("file-image", "size-4 text-accent")}</div>
-          <div class="min-w-0">
-            <p class="truncate text-sm font-medium">${esc(state.file.name || "Capture collée")}</p>
-            <p class="font-mono text-xs text-zinc-500">${formatBytes(state.file.size)}</p>
-          </div>
+        <div class="flex items-center justify-between text-xs">
+          <span class="text-zinc-500">Style</span>
+          <span class="font-medium text-zinc-200">${STYLES[state.style].label} <span class="font-mono text-zinc-500">${STYLES[state.style].tf}</span></span>
         </div>
+        <div class="space-y-3">${files}</div>
         ${action}
-        <button data-action="reset" ${state.status === "loading" ? "disabled" : ""} class="btn-ghost h-8 w-full px-3 text-xs">${icon("rotate-ccw", "size-3.5")} Changer d’image</button>
+        <button data-action="reset" ${state.status === "loading" ? "disabled" : ""} class="btn-ghost h-8 w-full px-3 text-xs">${icon("rotate-ccw", "size-3.5")} Tout retirer</button>
       </div>`;
   }
 
   function renderScanner() {
-    const hasFile = Boolean(state.file);
-    $("#dropzone").hidden = hasFile;
-    $("#preview").hidden = !hasFile;
-    if (hasFile && $("#preview-img").getAttribute("src") !== state.previewUrl) $("#preview-img").src = state.previewUrl;
-    $("#preview-img").style.opacity = state.status === "loading" ? "0.5" : "1";
-    $("#scan-overlay").hidden = state.status !== "loading";
+    renderPickers();
+    $("#slots").dataset.scanning = String(state.status === "loading");
 
     const err = $("#scanner-error");
     err.hidden = !state.error;
@@ -1079,17 +1248,84 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
     $("#scanner-side").innerHTML = renderSide();
     $("#scanner-result").innerHTML =
       state.status === "done" && state.result
-        ? `<div class="tab-enter">${renderDashboard(state.result.analysis, state.result.warnings, { model: state.result.model })}</div>`
+        ? `<div class="tab-enter">${renderDashboard(state.result.analysis, state.result.warnings, state.result.meta)}</div>`
         : "";
     refreshIcons();
   }
 
-  function selectFile(file) {
-    if (!file) return;
-    if (!CONFIG.ACCEPT.includes(file.type)) return showScannerError("Format non supporté. Utilise PNG, JPG ou WEBP.");
-    if (file.size > CONFIG.MAX_BYTES) return showScannerError("Image trop lourde (5 Mo max).");
-    if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
-    Object.assign(state, { file, previewUrl: URL.createObjectURL(file), status: "ready", result: null, error: null });
+  function setSlot(key, file) {
+    const old = state.slots[key];
+    if (old) URL.revokeObjectURL(old.url);
+    state.slots[key] = file ? { file, url: URL.createObjectURL(file) } : null;
+  }
+
+  function validateFile(file) {
+    if (!CONFIG.ACCEPT.includes(file.type)) return "Format non supporté. Utilise PNG, JPG ou WEBP.";
+    if (file.size > CONFIG.MAX_BYTES) return "Image trop lourde (5 Mo max).";
+    return null;
+  }
+
+  /** Place une image dans un slot (ou le premier slot libre). */
+  function selectFile(file, slot) {
+    if (!file || state.status === "loading") return;
+    const problem = validateFile(file);
+    if (problem) return showScannerError(problem);
+    const keys = activeSlots();
+    const target = slot && keys.includes(slot) ? slot : keys.find((k) => !state.slots[k]) || keys[keys.length - 1];
+    setSlot(target, file);
+    Object.assign(state, { status: "ready", result: null, error: null });
+    renderSlots();
+    renderScanner();
+  }
+
+  /** Dépôt de plusieurs fichiers d'un coup : HTF puis LTF en mode multi-timeframe. */
+  function selectFiles(files, slot) {
+    const list = Array.from(files || []).filter((f) => f.type.startsWith("image/"));
+    if (state.mode === "mtf" && list.length >= 2) {
+      const problem = validateFile(list[0]) || validateFile(list[1]);
+      if (problem) return showScannerError(problem);
+      setSlot("htf", list[0]);
+      setSlot("ltf", list[1]);
+      Object.assign(state, { status: "ready", result: null, error: null });
+      renderSlots();
+      renderScanner();
+      return;
+    }
+    selectFile(list[0], slot);
+  }
+
+  function removeSlot(key) {
+    if (state.status === "loading") return;
+    setSlot(key, null);
+    Object.assign(state, { status: hasAnyFile() ? "ready" : "idle", result: null, error: null });
+    renderSlots();
+    renderScanner();
+  }
+
+  function setMode(mode) {
+    if (state.status === "loading" || mode === state.mode) return;
+    if (mode === "mtf") {
+      // L'image déjà chargée devient le déclencheur (LTF)
+      if (state.slots.main) state.slots.ltf = state.slots.main;
+    } else {
+      const keep = state.slots.ltf || state.slots.htf;
+      const drop = keep === state.slots.ltf ? state.slots.htf : state.slots.ltf;
+      if (drop) URL.revokeObjectURL(drop.url);
+      state.slots.main = keep || null;
+    }
+    if (mode === "mtf") state.slots.main = null;
+    else state.slots.htf = state.slots.ltf = null;
+    state.mode = mode;
+    local.set(CONFIG.KEYS.mode, mode);
+    Object.assign(state, { status: hasAnyFile() ? "ready" : "idle", result: null, error: null });
+    renderSlots();
+    renderScanner();
+  }
+
+  function setStyle(id) {
+    if (!STYLES[id] || state.status === "loading") return;
+    state.style = id;
+    local.set(CONFIG.KEYS.style, id);
     renderScanner();
   }
 
@@ -1099,9 +1335,9 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
   }
 
   function resetScanner() {
-    if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
-    Object.assign(state, { file: null, previewUrl: null, status: "idle", result: null, error: null });
-    $("#preview-img").removeAttribute("src");
+    ["main", "htf", "ltf"].forEach((k) => setSlot(k, null));
+    Object.assign(state, { status: "idle", result: null, error: null });
+    renderSlots();
     renderScanner();
   }
 
@@ -1128,29 +1364,43 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
   }
 
   async function analyze() {
-    if (!state.file || state.status === "loading") return;
+    if (!isComplete() || state.status === "loading") return;
     if (!getApiKey()) return openSettings();
 
-    state.status = "loading";
-    state.error = null;
-    state.loaderStep = 0;
-    state.loaderStart = Date.now();
+    const multi = state.mode === "mtf";
+    const style = state.style;
+    const images = multi
+      ? [
+          { file: state.slots.htf.file, label: "Image 1 — HTF (vue d'ensemble) :" },
+          { file: state.slots.ltf.file, label: "Image 2 — LTF (déclencheur) :" },
+        ]
+      : [{ file: state.slots.main.file }];
+
+    Object.assign(state, { status: "loading", error: null, loaderStep: 0, loaderStart: Date.now() });
     renderScanner();
     startLoader();
     try {
       const model = getModel();
-      const { analysis, warnings } = await analyzeImage(state.file);
-      state.result = { analysis, warnings, model };
-      state.status = "done";
+      const { analysis, warnings } = await analyzeImages(images, style, multi);
+      const id = newId();
+      const entry = analysis.trade_plan.entry_price === "Market" ? (analysis.current_price ?? null) : analysis.trade_plan.entry_price;
+      const rr2 = entry !== null ? computeRR(entry, analysis.trade_plan.stop_loss, analysis.trade_plan.take_profit_2) : null;
       addHistory({
-        id: newId(),
+        id,
         createdAt: new Date().toISOString(),
-        fileName: state.file.name || "capture.png",
-        thumbnail: await makeThumbnail(state.file),
+        fileName: images[images.length - 1].file.name || "capture.png",
+        thumbnail: await makeThumbnail(images[images.length - 1].file),
+        thumbnailHtf: multi ? await makeThumbnail(images[0].file) : null,
         analysis,
         warnings,
         model,
+        style,
+        mode: multi ? "mtf" : "single",
+        status: "pending",
+        checklist: [false, false, false, rr2 !== null && rr2 >= 2, false],
       });
+      state.result = { analysis, warnings, meta: { model, style, mode: multi ? "mtf" : "single", entryId: id } };
+      state.status = "done";
     } catch (e) {
       state.error = e instanceof Error ? e.message : "Analyse impossible.";
       state.status = "error";
@@ -1162,15 +1412,29 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
   }
 
   /* =========================================================
-   * Historique (localStorage)
+   * Journal de trading (localStorage)
    * ========================================================= */
+  function normalizeEntry(e) {
+    const analysis = validateAnalysis(e.analysis);
+    const checklist = Array.isArray(e.checklist) ? CHECKLIST.map((_, i) => Boolean(e.checklist[i])) : CHECKLIST.map(() => false);
+    return {
+      ...e,
+      analysis,
+      warnings: Array.isArray(e.warnings) ? e.warnings : [],
+      status: STATUSES[e.status] ? e.status : "pending",
+      style: STYLES[e.style] ? e.style : "day",
+      mode: e.mode === "mtf" ? "mtf" : "single",
+      checklist,
+    };
+  }
+
   function loadHistory() {
     try {
       const arr = JSON.parse(local.get(CONFIG.KEYS.history) || "[]");
       if (!Array.isArray(arr)) return [];
       return arr.flatMap((e) => {
         try {
-          return [{ ...e, analysis: validateAnalysis(e.analysis), warnings: Array.isArray(e.warnings) ? e.warnings : [] }];
+          return [normalizeEntry(e)];
         } catch {
           return [];
         }
@@ -1182,8 +1446,11 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
 
   function persistHistory() {
     let list = state.history.slice(0, CONFIG.HISTORY_MAX);
-    // Si le quota est dépassé, on retire les entrées les plus anciennes
-    while (list.length && !local.set(CONFIG.KEYS.history, JSON.stringify(list))) list = list.slice(0, -1);
+    // Quota dépassé : on retire d'abord les miniatures HTF, puis les entrées les plus anciennes
+    if (!local.set(CONFIG.KEYS.history, JSON.stringify(list))) {
+      list = list.map((e) => ({ ...e, thumbnailHtf: null }));
+      while (list.length && !local.set(CONFIG.KEYS.history, JSON.stringify(list))) list = list.slice(0, -1);
+    }
     if (!list.length) local.del(CONFIG.KEYS.history);
   }
 
@@ -1193,13 +1460,7 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
     renderTabs();
   }
 
-  function clearHistory() {
-    if (!state.history.length || !window.confirm("Supprimer tout l’historique des scans ?")) return;
-    state.history = [];
-    local.del(CONFIG.KEYS.history);
-    renderTabs();
-    renderHistory();
-  }
+  const findEntry = (id) => state.history.find((e) => e.id === id);
 
   function deleteEntry(id) {
     state.history = state.history.filter((e) => e.id !== id);
@@ -1208,8 +1469,147 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
     renderHistory();
   }
 
+  async function resetJournal() {
+    if (!state.history.length) return;
+    const ok = await confirmDialog({
+      title: "Réinitialiser le journal ?",
+      message: `Les ${state.history.length} trades enregistrés, leurs statuts et leurs checklists seront supprimés de ce navigateur. Cette action est définitive.`,
+      confirmLabel: "Tout supprimer",
+    });
+    if (!ok) return;
+    state.history = [];
+    local.del(CONFIG.KEYS.history);
+    renderTabs();
+    renderHistory();
+  }
+
+  function setStatus(id, status) {
+    const e = findEntry(id);
+    if (!e || !STATUSES[status]) return;
+    e.status = status;
+    persistHistory();
+    renderHistory();
+  }
+
+  /* ---------- Calculs du journal (en multiples de R) ---------- */
+  function entryPrice(a) {
+    const e = a.trade_plan.entry_price;
+    return e === "Market" ? (a.current_price ?? null) : e;
+  }
+  function plannedR(a, tpKey) {
+    const entry = entryPrice(a);
+    return entry === null ? null : computeRR(entry, a.trade_plan.stop_loss, a.trade_plan[tpKey]);
+  }
+  /** Résultat d'un trade en R (sortie totale à TP1 ou TP2, -1 R au stop). */
+  function resultR(e) {
+    if (e.status === "sl") return -1;
+    if (e.status === "tp1") return plannedR(e.analysis, "take_profit_1");
+    if (e.status === "tp2") return plannedR(e.analysis, "take_profit_2");
+    return null;
+  }
+
+  function journalStats() {
+    const h = state.history;
+    const closed = h.filter((e) => ["tp1", "tp2", "sl"].includes(e.status));
+    const wins = closed.filter((e) => e.status !== "sl").length;
+    const results = closed
+      .slice()
+      .sort((x, y) => x.createdAt.localeCompare(y.createdAt))
+      .map(resultR)
+      .filter((r) => r !== null);
+    const rrs = h.map((e) => plannedR(e.analysis, "take_profit_2")).filter((r) => r !== null);
+    return {
+      total: h.length,
+      open: h.filter((e) => e.status === "open").length,
+      closed: closed.length,
+      wins,
+      winrate: closed.length ? (wins / closed.length) * 100 : null,
+      pnl: results.reduce((s, r) => s + r, 0),
+      curve: results.reduce((acc, r) => [...acc, (acc.length ? acc[acc.length - 1] : 0) + r], []),
+      avgRR: rrs.length ? rrs.reduce((s, r) => s + r, 0) / rrs.length : null,
+    };
+  }
+
+  const fmtR = (r) => `${r > 0 ? "+" : r < 0 ? "−" : ""}${Math.abs(r).toLocaleString("fr-FR", { maximumFractionDigits: 2 })} R`;
+
+  /** Mini courbe de performance cumulée (SVG). */
+  function sparkline(points) {
+    if (points.length < 2) return "";
+    const all = [0, ...points];
+    const max = Math.max(...all);
+    const min = Math.min(...all);
+    const range = max - min || 1;
+    const w = 120;
+    const hgt = 32;
+    const xy = all.map((v, i) => `${((i / (all.length - 1)) * w).toFixed(1)},${(hgt - ((v - min) / range) * hgt).toFixed(1)}`);
+    const color = points[points.length - 1] >= 0 ? "#10b981" : "#e11d48";
+    const zeroY = (hgt - ((0 - min) / range) * hgt).toFixed(1);
+    return `
+      <svg viewBox="0 0 ${w} ${hgt}" class="h-8 w-28" aria-hidden="true" preserveAspectRatio="none">
+        <line x1="0" y1="${zeroY}" x2="${w}" y2="${zeroY}" stroke="rgb(255 255 255 / 0.1)" stroke-dasharray="2 3" />
+        <polyline points="${xy.join(" ")}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round" style="filter:drop-shadow(0 0 4px ${color}88)" />
+      </svg>`;
+  }
+
+  /* ---------- Checklist de confluence ---------- */
+  function checklistHtml(id) {
+    const e = findEntry(id);
+    if (!e) return "";
+    const n = e.checklist.filter(Boolean).length;
+    return `
+      <div class="glass p-5" data-checklist="${esc(id)}">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <h3 class="flex items-center gap-2 text-sm font-medium">${icon("list-checks", "size-4 text-accent")} Checklist de confluence</h3>
+          <span data-check-badge>${checklistBadge(n)}</span>
+        </div>
+        <div class="mt-4 flex gap-1.5" data-check-bars>${checklistBars(n)}</div>
+        <ul class="mt-4 grid gap-2 sm:grid-cols-2">
+          ${CHECKLIST.map(
+            (label, i) => `
+            <li>
+              <label class="check-row flex cursor-pointer items-start gap-3 rounded-xl border border-white/[0.06] bg-white/[0.02] p-3 text-sm transition-colors hover:border-white/[0.12]">
+                <input type="checkbox" class="check mt-0.5" data-check="${i}" data-entry="${esc(id)}" ${e.checklist[i] ? "checked" : ""} />
+                <span class="text-zinc-300">${label}${i === 4 ? `<span data-macro-hint class="mt-1 block text-xs text-[#fb7185]">${macroHintText()}</span>` : ""}${
+                  i === 3 ? `<span class="mt-1 block text-xs text-zinc-500">Pré-rempli d’après le R:R recalculé</span>` : ""
+                }</span>
+              </label>
+            </li>`,
+          ).join("")}
+        </ul>
+      </div>`;
+  }
+
+  function checklistBadge(n) {
+    return n >= 4
+      ? `<span class="validated inline-flex items-center gap-2 rounded-full border border-buy/40 bg-buy/10 px-3 py-1 text-xs font-medium text-[#34d399]"><span class="pulse-dot bg-buy"></span>Setup validé pour exécution · ${n}/5</span>`
+      : `<span class="inline-flex items-center gap-2 rounded-full border border-wait/30 bg-wait/[0.08] px-3 py-1 text-xs font-medium text-[#fbbf24]">${icon("triangle-alert", "size-3.5")} Confluences insuffisantes · ${n}/5</span>`;
+  }
+  function checklistBars(n) {
+    return CHECKLIST.map(
+      (_, i) => `<span class="h-1 flex-1 rounded-full transition-colors duration-300 ${i < n ? (n >= 4 ? "bg-buy shadow-[0_0_8px_rgb(16_185_129/0.7)]" : "bg-wait") : "bg-white/[0.06]"}"></span>`,
+    ).join("");
+  }
+
+  function onCheck(input) {
+    const e = findEntry(input.dataset.entry);
+    if (!e) return;
+    e.checklist[Number(input.dataset.check)] = input.checked;
+    persistHistory();
+    const n = e.checklist.filter(Boolean).length;
+    // Synchronise toutes les copies affichées (analyseur + fenêtre de détail)
+    $$(`[data-checklist="${CSS.escape(e.id)}"]`).forEach((box) => {
+      box.querySelector("[data-check-badge]").innerHTML = checklistBadge(n);
+      box.querySelector("[data-check-bars]").innerHTML = checklistBars(n);
+      box.querySelectorAll("[data-check]").forEach((c) => (c.checked = e.checklist[Number(c.dataset.check)]));
+    });
+    refreshIcons();
+  }
+
+  /* ---------- Fenêtre de détail ---------- */
+  const safeThumb = (t) => (typeof t === "string" && t.startsWith("data:image/") ? esc(t) : null);
+
   function openDetail(id) {
-    const e = state.history.find((x) => x.id === id);
+    const e = findEntry(id);
     if (!e) return;
     const thumb = safeThumb(e.thumbnail);
     $("#detail-title").innerHTML = `
@@ -1217,94 +1617,396 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
         ${thumb ? `<img src="${thumb}" alt="" class="h-8 w-12 shrink-0 rounded border border-white/[0.08] object-cover" />` : ""}
         <div class="min-w-0">
           <p class="truncate font-medium">${esc(e.analysis.asset_detected)} <span class="text-zinc-500">· ${esc(e.analysis.timeframe_detected)}</span></p>
-          <p class="font-mono text-[11px] text-zinc-500">${esc(formatDateTime(e.createdAt))}</p>
+          <p class="font-mono text-[11px] text-zinc-500">${esc(formatDateTime(e.createdAt))} · ${STATUSES[e.status].label}</p>
         </div>
       </div>`;
-    $("#detail-body").innerHTML = renderDashboard(e.analysis, e.warnings, { model: e.model });
+    $("#detail-body").innerHTML = renderDashboard(e.analysis, e.warnings, { model: e.model, style: e.style, mode: e.mode, entryId: e.id });
     refreshIcons();
     $("#detail").showModal();
     $("#detail").scrollTop = 0;
   }
 
-  const safeThumb = (t) => (typeof t === "string" && t.startsWith("data:image/") ? esc(t) : null);
+  /* ---------- Export CSV (Excel FR : séparateur « ; », virgule décimale) ---------- */
+  function exportCsv() {
+    if (!state.history.length) return;
+    const n = (v) => (v === null || v === undefined || v === "" ? "" : typeof v === "number" ? v.toLocaleString("fr-FR", { useGrouping: false, maximumFractionDigits: 8 }) : v);
+    const cell = (v) => {
+      const s = String(n(v));
+      return /[;"\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const header = [
+      "Date", "Actif", "Unité de temps", "Style", "Mode", "Signal", "Confiance (%)", "Prix actuel",
+      "Entrée", "Stop", "TP1", "TP2", "R:R prévu (TP2)", "Statut", "Résultat (R)", "Checklist (/5)", "Alertes", "Rationale",
+    ];
+    const rows = state.history.map((e) => {
+      const a = e.analysis;
+      const p = a.trade_plan;
+      const rr = plannedR(a, "take_profit_2");
+      return [
+        new Date(e.createdAt).toLocaleString("fr-FR"),
+        a.asset_detected,
+        a.timeframe_detected,
+        STYLES[e.style].label,
+        e.mode === "mtf" ? "Multi-TF" : "1 image",
+        a.recommendation,
+        a.confidence_score,
+        a.current_price,
+        p.entry_price === "Market" ? "Market" : p.entry_price,
+        p.stop_loss,
+        p.take_profit_1,
+        p.take_profit_2,
+        rr === null ? "" : Math.round(rr * 100) / 100,
+        STATUSES[e.status].label,
+        resultR(e) === null ? "" : Math.round(resultR(e) * 100) / 100,
+        e.checklist.filter(Boolean).length,
+        e.warnings.join(" | "),
+        a.rationale,
+      ];
+    });
+    const csv = "\uFEFF" + [header, ...rows].map((r) => r.map(cell).join(";")).join("\r\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `tradeia-journal-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
 
+  /* ---------- Modale de confirmation ---------- */
+  function confirmDialog({ title, message, confirmLabel = "Confirmer" }) {
+    const dlg = $("#confirm");
+    $("#confirm-title").textContent = title;
+    $("#confirm-message").textContent = message;
+    $("#confirm-ok").textContent = confirmLabel;
+    return new Promise((resolve) => {
+      const done = (value) => {
+        dlg.removeEventListener("close", onClose);
+        resolve(value);
+      };
+      const onClose = () => done(dlg.returnValue === "ok");
+      dlg.returnValue = "";
+      dlg.addEventListener("close", onClose);
+      dlg.showModal();
+    });
+  }
+
+  /* ---------- Rendu du journal ---------- */
   function renderHistory() {
     const root = $("#history-root");
     const header = (extra = "") => `
       <div class="flex flex-wrap items-end justify-between gap-4">
         <header>
-          <h1 class="text-3xl font-semibold tracking-tight">Historique des scans</h1>
-          <p class="mt-2 text-zinc-400">Tes analyses, enregistrées dans ce navigateur. Clique sur une carte pour revoir le plan.</p>
+          <h1 class="text-3xl font-semibold tracking-tight">Journal de trading</h1>
+          <p class="mt-2 text-zinc-400">Mets à jour le statut de chaque trade : les statistiques se recalculent en direct.</p>
         </header>${extra}
       </div>`;
 
     if (!state.history.length) {
       root.innerHTML = `${header()}
         <div class="glass mt-8 flex flex-col items-center px-6 py-20 text-center">
-          <div class="grid size-12 place-items-center rounded-xl border border-white/[0.08] bg-ink">${icon("history", "size-5 text-zinc-500")}</div>
-          <p class="mt-5 font-medium">Aucun scan pour l’instant</p>
-          <p class="mt-1 max-w-sm text-sm text-zinc-500">Tes analyses apparaîtront ici, avec leur miniature et leur plan de trade.</p>
+          <div class="grid size-12 place-items-center rounded-xl border border-white/[0.08] bg-ink">${icon("notebook-pen", "size-5 text-zinc-500")}</div>
+          <p class="mt-5 font-medium">Ton journal est vide</p>
+          <p class="mt-1 max-w-sm text-sm text-zinc-500">Chaque analyse est ajoutée ici automatiquement. Tu pourras suivre son statut jusqu’à la clôture.</p>
           <button data-nav="analyseur" class="btn-primary shimmer mt-6 h-10 px-4">${icon("scan-line")} Lancer une analyse</button>
         </div>`;
       refreshIcons();
       return;
     }
 
-    const h = state.history;
-    const count = (r) => h.filter((e) => e.analysis.recommendation === r).length;
-    const avg = Math.round(h.reduce((s, e) => s + e.analysis.confidence_score, 0) / h.length);
-    const stats = [
-      ["Scans", h.length, "text-fg"],
-      ["Achats", count("BUY"), "text-[#34d399]"],
-      ["Ventes", count("SELL"), "text-[#fb7185]"],
-      ["Attentes", count("WAIT"), "text-[#fbbf24]"],
-      ["Confiance moy.", `${avg} %`, "text-accent"],
-    ];
+    const st = journalStats();
+    const stat = (label, value, sub, cls = "text-fg", extra = "") => `
+      <div class="glass flex items-end justify-between gap-3 p-4">
+        <div class="min-w-0">
+          <dt class="text-xs text-zinc-500">${label}</dt>
+          <dd class="mt-2 font-mono text-2xl font-medium tracking-tight ${cls}">${value}</dd>
+          <p class="mt-1 truncate font-mono text-[11px] text-zinc-500">${sub}</p>
+        </div>${extra}
+      </div>`;
+
+    const rows = state.history
+      .map((e) => {
+        const a = e.analysis;
+        const d = DECISION[a.recommendation];
+        const thumb = safeThumb(e.thumbnail);
+        const r = resultR(e);
+        const rr = plannedR(a, "take_profit_2");
+        const checks = e.checklist.filter(Boolean).length;
+        return `
+          <tr class="border-b border-white/[0.05] transition-colors last:border-0 hover:bg-white/[0.02]">
+            <td class="py-3 pl-4 pr-3">
+              <button data-action="open-detail" data-id="${esc(e.id)}" class="group flex items-center gap-3 text-left" aria-label="Voir le plan ${esc(a.asset_detected)}">
+                ${
+                  thumb
+                    ? `<img src="${thumb}" alt="" class="h-10 w-16 shrink-0 rounded-md border border-white/[0.08] object-cover transition group-hover:border-accent/50" />`
+                    : `<span class="h-10 w-16 shrink-0 rounded-md border border-white/[0.08] bg-ink"></span>`
+                }
+                <span class="min-w-0">
+                  <span class="block truncate font-medium group-hover:text-accent">${esc(a.asset_detected)}</span>
+                  <span class="block font-mono text-[11px] text-zinc-500">${esc(a.timeframe_detected)} · ${STYLES[e.style].label}${e.mode === "mtf" ? " · MTF" : ""}</span>
+                </span>
+              </button>
+            </td>
+            <td class="px-3 py-3 font-mono text-xs text-zinc-500">${esc(formatDateTime(e.createdAt))}</td>
+            <td class="px-3 py-3">${badge(`<span class="pulse-dot" style="background:${d.hex}"></span>${a.recommendation}`, d.badge)}</td>
+            <td class="px-3 py-3 text-right font-mono text-sm">${rr === null ? "—" : `1:${rr.toLocaleString("fr-FR", { maximumFractionDigits: 1 })}`}</td>
+            <td class="px-3 py-3 text-center font-mono text-xs ${checks >= 4 ? "text-[#34d399]" : "text-zinc-500"}">${checks}/5</td>
+            <td class="px-3 py-3">
+              <select data-status-select data-id="${esc(e.id)}" data-status="${e.status}" aria-label="Statut du trade"
+                class="status-select h-8 cursor-pointer rounded-lg border border-white/[0.1] bg-ink pl-2.5 pr-7 text-xs font-medium outline-none ${STATUSES[e.status].cls}">
+                ${Object.entries(STATUSES).map(([k, s]) => `<option value="${k}" ${k === e.status ? "selected" : ""}>${s.label}</option>`).join("")}
+              </select>
+            </td>
+            <td class="px-3 py-3 text-right font-mono text-sm ${r === null ? "text-zinc-600" : r >= 0 ? "text-[#34d399]" : "text-[#fb7185]"}">${r === null ? "—" : fmtR(r)}</td>
+            <td class="py-3 pl-3 pr-4 text-right">
+              <button data-action="delete" data-id="${esc(e.id)}" class="btn-ghost size-8 hover:!text-[#fb7185]" aria-label="Supprimer ce trade">${icon("trash-2", "size-3.5")}</button>
+            </td>
+          </tr>`;
+      })
+      .join("");
 
     root.innerHTML = `
       <div class="space-y-6">
-        ${header(`<button data-action="clear-history" class="btn-outline h-9 px-3 text-xs">${icon("trash-2", "size-3.5")} Tout effacer</button>`)}
-        <dl class="grid grid-cols-2 gap-3 sm:grid-cols-5">
-          ${stats
-            .map(([l, v, c]) => `<div class="glass p-4"><dt class="text-xs text-zinc-500">${l}</dt><dd class="mt-2 font-mono text-2xl font-medium tracking-tight ${c}">${v}</dd></div>`)
-            .join("")}
+        ${header(`
+          <div class="flex flex-wrap gap-2">
+            <button data-action="export-csv" class="btn-outline h-9 px-3 text-xs">${icon("file-down", "size-3.5")} Exporter en CSV</button>
+            <button data-action="reset-journal" class="btn-ghost h-9 px-3 text-xs hover:!text-[#fb7185]">${icon("rotate-ccw", "size-3.5")} Réinitialiser le journal</button>
+          </div>`)}
+        <dl class="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          ${stat("Trades", st.total, `${st.closed} clôturé${st.closed > 1 ? "s" : ""} · ${st.open} en cours`)}
+          ${stat(
+            "Winrate",
+            st.winrate === null ? "—" : `${st.winrate.toLocaleString("fr-FR", { maximumFractionDigits: 1 })} %`,
+            st.closed ? `${st.wins} gagnant${st.wins > 1 ? "s" : ""} / ${st.closed}` : "Aucun trade clôturé",
+            st.winrate === null ? "text-zinc-500" : st.winrate >= 50 ? "text-[#34d399]" : "text-[#fbbf24]",
+          )}
+          ${stat(
+            "PnL cumulé",
+            st.closed ? fmtR(st.pnl) : "—",
+            "Sortie totale au TP, −1 R au stop",
+            !st.closed ? "text-zinc-500" : st.pnl >= 0 ? "text-[#34d399]" : "text-[#fb7185]",
+            sparkline(st.curve),
+          )}
+          ${stat("R:R moyen", st.avgRR === null ? "—" : `1:${st.avgRR.toLocaleString("fr-FR", { maximumFractionDigits: 1 })}`, "Prévu, vers TP2", "text-accent")}
         </dl>
-        <ul class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          ${h
-            .map((e) => {
-              const a = e.analysis;
-              const d = DECISION[a.recommendation];
-              const thumb = safeThumb(e.thumbnail);
-              return `
-                <li class="glass history-card group overflow-hidden">
-                  <button data-action="open-detail" data-id="${esc(e.id)}" class="relative block aspect-[16/9] w-full overflow-hidden bg-black/40" aria-label="Voir l’analyse ${esc(a.asset_detected)}">
-                    ${thumb ? `<img src="${thumb}" alt="" class="size-full object-cover opacity-80 transition duration-500 group-hover:scale-[1.03] group-hover:opacity-100" />` : ""}
-                    <span class="absolute inset-0 bg-linear-to-t from-[#0e131f] via-transparent to-transparent"></span>
-                    <span class="absolute left-3 top-3">${badge(`<span class="pulse-dot" style="background:${d.hex}"></span>${a.recommendation}`, `${d.badge} backdrop-blur-md`)}</span>
-                    <span class="absolute inset-x-0 bottom-3 flex justify-center opacity-0 transition-opacity duration-300 group-hover:opacity-100">
-                      <span class="rounded-full border border-white/15 bg-black/60 px-3 py-1 text-xs backdrop-blur-md">Voir le plan</span>
-                    </span>
-                  </button>
-                  <div class="flex items-start justify-between gap-3 p-4">
-                    <div class="min-w-0">
-                      <p class="truncate font-medium">${esc(a.asset_detected)} <span class="text-zinc-500">· ${esc(a.timeframe_detected)}</span></p>
-                      <p class="mt-1 font-mono text-[11px] text-zinc-500">${esc(formatDateTime(e.createdAt))}</p>
-                    </div>
-                    <button data-action="delete" data-id="${esc(e.id)}" class="btn-ghost size-8 shrink-0 hover:!text-[#fb7185]" aria-label="Supprimer ce scan">${icon("trash-2", "size-3.5")}</button>
-                  </div>
-                  <div class="flex items-center gap-4 border-t border-white/[0.06] px-4 py-3 font-mono text-xs">
-                    <span><span class="text-zinc-500">Conf.</span> ${a.confidence_score} %</span>
-                    <span><span class="text-zinc-500">R:R</span> ${esc(a.trade_plan.risk_reward_ratio)}</span>
-                    <span class="ml-auto ${e.warnings.length ? "text-[#fbbf24]" : "text-[#34d399]"}">${
-                      e.warnings.length ? `${e.warnings.length} alerte${e.warnings.length > 1 ? "s" : ""}` : "Cohérent"
-                    }</span>
-                  </div>
-                </li>`;
-            })
-            .join("")}
-        </ul>
+        <div class="glass overflow-x-auto">
+          <table class="w-full min-w-[880px] text-sm">
+            <thead>
+              <tr class="border-b border-white/[0.08] text-left text-[11px] text-zinc-500">
+                <th class="py-3 pl-4 pr-3 font-normal">Trade</th>
+                <th class="px-3 py-3 font-normal">Date</th>
+                <th class="px-3 py-3 font-normal">Signal</th>
+                <th class="px-3 py-3 text-right font-normal">R:R prévu</th>
+                <th class="px-3 py-3 text-center font-normal">Checklist</th>
+                <th class="px-3 py-3 font-normal">Statut</th>
+                <th class="px-3 py-3 text-right font-normal">Résultat</th>
+                <th class="py-3 pl-3 pr-4"><span class="sr-only">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
       </div>`;
     refreshIcons();
+  }
+
+  /* =========================================================
+   * Surveillance macro (calendrier du jour + fenêtres de volatilité)
+   * ========================================================= */
+  const MACRO = {
+    FEED: "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+    CACHE_MS: 60 * 60 * 1000,
+    WINDOW_MIN: 15,
+  };
+  const todayKey = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
+  const sameLocalDay = (date) => {
+    const d = new Date();
+    return date.getFullYear() === d.getFullYear() && date.getMonth() === d.getMonth() && date.getDate() === d.getDate();
+  };
+  const timeLabel = (date) => date.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+
+  function loadManualEvents() {
+    try {
+      const arr = JSON.parse(local.get(CONFIG.KEYS.macroManual) || "[]");
+      const today = todayKey();
+      const kept = Array.isArray(arr) ? arr.filter((e) => e && e.day === today && typeof e.time === "string" && typeof e.title === "string") : [];
+      if (Array.isArray(arr) && kept.length !== arr.length) local.set(CONFIG.KEYS.macroManual, JSON.stringify(kept));
+      return kept;
+    } catch {
+      return [];
+    }
+  }
+
+  /** Flux automatique (ForexFactory, best effort) avec cache d'une heure. */
+  async function fetchMacroFeed() {
+    try {
+      const cached = JSON.parse(local.get(CONFIG.KEYS.macroCache) || "null");
+      if (cached && Date.now() - cached.at < MACRO.CACHE_MS && Array.isArray(cached.data)) return cached.data;
+    } catch { /* cache illisible */ }
+    const res = await fetch(MACRO.FEED, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!Array.isArray(data)) throw new Error("Format inattendu");
+    local.set(CONFIG.KEYS.macroCache, JSON.stringify({ at: Date.now(), data }));
+    return data;
+  }
+
+  async function initMacro() {
+    state.macro.manual = loadManualEvents();
+    renderMacroShell();
+    renderMacro();
+    try {
+      const data = await fetchMacroFeed();
+      state.macro.auto = data
+        .filter((e) => e && String(e.impact).toLowerCase() === "high" && e.date)
+        .map((e) => ({ date: new Date(e.date), title: String(e.title || "Annonce"), country: String(e.country || ""), forecast: e.forecast, previous: e.previous }))
+        .filter((e) => !Number.isNaN(e.date.getTime()) && sameLocalDay(e.date));
+      state.macro.source = "auto";
+    } catch {
+      state.macro.source = "manual";
+    }
+    renderMacro();
+  }
+
+  /** Toutes les annonces du jour, triées. */
+  function macroEvents() {
+    const manual = state.macro.manual.map((e) => {
+      const [h, m] = e.time.split(":").map(Number);
+      const date = new Date();
+      date.setHours(h || 0, m || 0, 0, 0);
+      return { id: e.id, date, title: e.title, country: e.country || "", manual: true };
+    });
+    return [...state.macro.auto, ...manual].sort((x, y) => x.date - y.date);
+  }
+
+  /** Annonce dont la fenêtre ±15 min est active, et prochaine annonce dans l'heure. */
+  function macroWindow() {
+    const now = Date.now();
+    const w = MACRO.WINDOW_MIN * 60 * 1000;
+    const events = macroEvents();
+    const active = events.find((e) => Math.abs(e.date - now) <= w) || null;
+    const upcoming = events.find((e) => e.date - now > w && e.date - now <= 60 * 60 * 1000) || null;
+    return { active, upcoming };
+  }
+
+  function macroHintText() {
+    const { active } = macroWindow();
+    return active ? `Fenêtre de volatilité active : ${active.title}` : "";
+  }
+
+  function relTime(date) {
+    const diff = Math.round((date - Date.now()) / 60000);
+    if (Math.abs(diff) <= MACRO.WINDOW_MIN) return { text: diff >= 0 ? `dans ${diff} min` : `il y a ${-diff} min`, cls: "text-[#fb7185]", live: true };
+    if (diff > 0) return { text: diff < 60 ? `dans ${diff} min` : `dans ${Math.floor(diff / 60)} h ${String(diff % 60).padStart(2, "0")}`, cls: diff <= 60 ? "text-[#fbbf24]" : "text-zinc-500", live: false };
+    return { text: "passée", cls: "text-zinc-600", live: false };
+  }
+
+  /** Squelette de la carte macro (rendu une seule fois : le formulaire n'est jamais effacé). */
+  function renderMacroShell() {
+    $("#macro-card").innerHTML = `
+      <div class="flex items-center justify-between gap-2">
+        <h2 class="flex items-center gap-2 text-sm font-medium">${icon("calendar-clock", "size-4 text-accent")} Surveillance macro</h2>
+        <span class="font-mono text-[11px] text-zinc-500">${new Date().toLocaleDateString("fr-FR", { weekday: "short", day: "2-digit", month: "short" })}</span>
+      </div>
+      <ul id="macro-list" class="mt-3 space-y-0.5"></ul>
+      <details class="group mt-3">
+        <summary class="flex cursor-pointer list-none items-center gap-1.5 text-xs text-zinc-400 hover:text-fg">
+          ${icon("plus", "size-3.5")} Ajouter une annonce
+        </summary>
+        <form id="macro-form" class="mt-3 grid grid-cols-[5.5rem_1fr] gap-2">
+          <input name="time" type="time" required class="field h-9 px-2 font-mono text-xs" aria-label="Heure" />
+          <input name="title" required maxlength="60" placeholder="ex : CPI US" class="field h-9 text-xs" aria-label="Annonce" />
+          <input name="country" maxlength="3" placeholder="USD" class="field h-9 px-2 font-mono text-xs uppercase" aria-label="Devise" />
+          <button type="submit" class="btn-outline h-9 text-xs">Ajouter (impact fort)</button>
+        </form>
+      </details>
+      <div class="mt-4 flex gap-2.5 rounded-lg border border-sell/20 bg-sell/[0.05] p-3 text-xs leading-relaxed text-zinc-300">
+        ${icon("shield-alert", "mt-0.5 size-3.5 shrink-0 text-[#fb7185]")}
+        <p>Pas de nouvelle position 15 min avant et après une annonce à fort impact (CPI, NFP, FOMC, taux directeurs).</p>
+      </div>
+      <p class="mt-3 flex items-center justify-between gap-2 text-[11px] text-zinc-600">
+        <span id="macro-source"></span>
+        <a href="https://www.forexfactory.com/calendar" target="_blank" rel="noopener" class="inline-flex shrink-0 items-center gap-1 text-zinc-400 hover:text-accent">Calendrier complet ${icon("arrow-up-right", "size-3")}</a>
+      </p>`;
+    refreshIcons();
+  }
+
+  function renderMacro() {
+    const events = macroEvents();
+    const { active, upcoming } = macroWindow();
+
+    // Bandeau d'alerte en haut de l'analyseur
+    const alert = $("#macro-alert");
+    if (active) {
+      const end = new Date(active.date.getTime() + MACRO.WINDOW_MIN * 60000);
+      alert.hidden = false;
+      alert.className = "macro-alert flex items-start gap-3 rounded-xl border border-sell/40 bg-sell/[0.08] p-4 text-sm";
+      alert.innerHTML = `${icon("siren", "mt-0.5 size-4 shrink-0 text-[#fb7185]")}
+        <p><span class="font-medium text-[#fb7185]">Zone de volatilité : ${esc(active.title)}${active.country ? ` (${esc(active.country)})` : ""} à ${timeLabel(active.date)}.</span>
+        <span class="text-zinc-300"> Évite d’ouvrir une position avant ${timeLabel(end)}.</span></p>`;
+    } else if (upcoming) {
+      alert.hidden = false;
+      alert.className = "flex items-start gap-3 rounded-xl border border-wait/30 bg-wait/[0.06] p-4 text-sm";
+      alert.innerHTML = `${icon("alarm-clock", "mt-0.5 size-4 shrink-0 text-[#fbbf24]")}
+        <p><span class="font-medium text-[#fbbf24]">${esc(upcoming.title)}${upcoming.country ? ` (${esc(upcoming.country)})` : ""} ${relTime(upcoming.date).text}.</span>
+        <span class="text-zinc-300"> Ne prends pas de position entre ${timeLabel(new Date(upcoming.date - MACRO.WINDOW_MIN * 60000))} et ${timeLabel(new Date(upcoming.date.getTime() + MACRO.WINDOW_MIN * 60000))}.</span></p>`;
+    } else {
+      alert.hidden = true;
+    }
+
+    const list = events.length
+      ? events
+          .map((e) => {
+            const r = relTime(e.date);
+            const past = r.text === "passée";
+            return `
+              <li class="flex items-center gap-3 rounded-lg px-2 py-2 ${r.live ? "bg-sell/[0.08]" : ""} ${past ? "opacity-50" : ""}">
+                <span class="w-11 shrink-0 font-mono text-xs text-zinc-300">${timeLabel(e.date)}</span>
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate text-sm">${esc(e.title)}</span>
+                  <span class="block font-mono text-[11px] ${r.cls}">${r.text}</span>
+                </span>
+                ${e.country ? `<span class="rounded border border-white/[0.08] px-1.5 font-mono text-[10px] text-zinc-400">${esc(e.country)}</span>` : ""}
+                <span class="impact-high inline-flex items-center gap-1 rounded-md border border-sell/30 bg-sell/10 px-1.5 py-0.5 text-[10px] font-medium text-[#fb7185]">${r.live ? '<span class="pulse-dot bg-sell"></span>' : ""}High</span>
+                ${e.manual ? `<button data-action="macro-remove" data-id="${esc(e.id)}" class="text-zinc-600 hover:text-[#fb7185]" aria-label="Retirer">${icon("x", "size-3.5")}</button>` : ""}
+              </li>`;
+          })
+          .join("")
+      : `<li class="px-2 py-3 text-sm text-zinc-500">${
+          state.macro.source === "auto" ? "Aucune annonce à fort impact aujourd’hui." : "Aucune annonce enregistrée pour aujourd’hui."
+        }</li>`;
+
+    const source =
+      state.macro.source === "loading"
+        ? "Chargement du calendrier…"
+        : state.macro.source === "auto"
+          ? "Source : ForexFactory, impact fort uniquement"
+          : "Flux automatique indisponible : ajoute tes annonces à la main";
+
+    $("#macro-list").innerHTML = list;
+    $("#macro-source").textContent = source;
+    $$("[data-macro-hint]").forEach((el) => (el.textContent = macroHintText()));
+    refreshIcons();
+  }
+
+  function addManualEvent(form) {
+    const data = new FormData(form);
+    const time = String(data.get("time") || "");
+    const title = String(data.get("title") || "").trim();
+    if (!/^\d{2}:\d{2}$/.test(time) || !title) return;
+    state.macro.manual.push({ id: newId(), day: todayKey(), time, title, country: String(data.get("country") || "").trim().toUpperCase().slice(0, 3) });
+    local.set(CONFIG.KEYS.macroManual, JSON.stringify(state.macro.manual));
+    renderMacro();
+  }
+
+  function removeManualEvent(id) {
+    state.macro.manual = state.macro.manual.filter((e) => e.id !== id);
+    local.set(CONFIG.KEYS.macroManual, JSON.stringify(state.macro.manual));
+    renderMacro();
   }
 
   /* =========================================================
@@ -1408,21 +2110,21 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
   }
 
   /* =========================================================
-   * Raccourci clavier, presse-papier, bordure animée
+   * Presse-papier et bordures animées des dropzones
    * ========================================================= */
   const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
   const MOD_KEY = IS_MAC ? "⌘" : "Ctrl";
 
   function flashPasteHint() {
-    const hint = $("#paste-hint");
-    if (!hint) return;
-    hint.classList.remove("kbd-flash");
-    void hint.offsetWidth;
-    hint.classList.add("kbd-flash");
+    $$(".paste-hint").forEach((hint) => {
+      hint.classList.remove("kbd-flash");
+      void hint.offsetWidth;
+      hint.classList.add("kbd-flash");
+    });
   }
 
   /** Clic sur le badge : lit une image du presse-papier (si le navigateur l'autorise). */
-  async function pasteFromClipboard() {
+  async function pasteFromClipboard(slot) {
     flashPasteHint();
     if (!navigator.clipboard || !navigator.clipboard.read) {
       return showScannerError(`Utilise ${MOD_KEY} + V pour coller ta capture.`);
@@ -1433,7 +2135,7 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
         const type = item.types.find((t) => t.startsWith("image/"));
         if (type) {
           const blob = await item.getType(type);
-          return selectFile(new File([blob], "capture.png", { type: blob.type }));
+          return selectFile(new File([blob], "capture.png", { type: blob.type }), slot);
         }
       }
       showScannerError("Le presse-papier ne contient pas d’image.");
@@ -1442,22 +2144,30 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
     }
   }
 
-  /** Ajuste le rectangle SVG pointillé à la taille réelle de la dropzone. */
-  function bindDropzoneBorder() {
-    const dz = $("#dropzone");
-    const rect = $("#dz-rect");
-    if (!dz || !rect || !("ResizeObserver" in window)) return;
-    new ResizeObserver(() => {
-      rect.setAttribute("width", String(Math.max(0, dz.clientWidth - 2)));
-      rect.setAttribute("height", String(Math.max(0, dz.clientHeight - 2)));
-    }).observe(dz);
+  /** Ajuste les rectangles SVG pointillés à la taille réelle de chaque dropzone. */
+  const dzObserver =
+    "ResizeObserver" in window
+      ? new ResizeObserver((entries) => {
+          entries.forEach(({ target }) => {
+            const rect = target.querySelector(".dz-rect");
+            if (!rect) return;
+            rect.setAttribute("width", String(Math.max(0, target.clientWidth - 2)));
+            rect.setAttribute("height", String(Math.max(0, target.clientHeight - 2)));
+          });
+        })
+      : null;
+  function observeDropzones() {
+    if (!dzObserver) return;
+    dzObserver.disconnect();
+    $$(".dropzone").forEach((dz) => dzObserver.observe(dz));
   }
 
   /* =========================================================
-   * Événements
+   * Événements (délégation : les zones sont re-rendues dynamiquement)
    * ========================================================= */
   function bindEvents() {
-    // Navigation et actions (délégation)
+    const input = $("#file-input");
+
     document.addEventListener("click", (e) => {
       const target = e.target instanceof Element ? e.target : null;
       if (!target) return;
@@ -1474,28 +2184,68 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
         renderDemo();
         return;
       }
+      const style = target.closest("[data-style]");
+      if (style) return setStyle(style.dataset.style);
+      const mode = target.closest("[data-mode]");
+      if (mode) return setMode(mode.dataset.mode);
+
       const el = target.closest("[data-action]");
-      if (!el || el.disabled) return;
-      switch (el.dataset.action) {
-        case "analyze": analyze(); break;
-        case "reset": resetScanner(); break;
-        case "open-settings": openSettings(); break;
-        case "clear-history": clearHistory(); break;
-        case "open-detail": openDetail(el.dataset.id); break;
-        case "delete": deleteEntry(el.dataset.id); break;
-        case "paste-clipboard": pasteFromClipboard(); break;
-        case "copy-setup": copySetup(el); break;
+      if (el) {
+        if (el.disabled) return;
+        switch (el.dataset.action) {
+          case "analyze": analyze(); break;
+          case "reset": resetScanner(); break;
+          case "remove-slot": removeSlot(el.dataset.slot); break;
+          case "open-settings": openSettings(); break;
+          case "open-detail": openDetail(el.dataset.id); break;
+          case "delete": deleteEntry(el.dataset.id); break;
+          case "export-csv": exportCsv(); break;
+          case "reset-journal": resetJournal(); break;
+          case "paste-clipboard": pasteFromClipboard(el.dataset.slot); break;
+          case "copy-setup": copySetup(el); break;
+          case "macro-remove": removeManualEvent(el.dataset.id); break;
+        }
+        return;
+      }
+
+      const dz = target.closest(".dropzone");
+      if (dz && state.status !== "loading") {
+        state.pickSlot = dz.dataset.slot;
+        input.click();
       }
     });
 
-    // Entrée / Espace sur les éléments cliquables non-boutons
+    // Entrée / Espace sur les dropzones
     document.addEventListener("keydown", (e) => {
       if (e.key !== "Enter" && e.key !== " ") return;
       const el = e.target instanceof Element ? e.target : null;
-      if (el && el.id === "dropzone") {
+      if (el && el.classList.contains("dropzone")) {
         e.preventDefault();
         el.click();
       }
+    });
+
+    input.addEventListener("click", (e) => e.stopPropagation());
+    input.addEventListener("change", () => {
+      selectFile(input.files && input.files[0], state.pickSlot);
+      input.value = "";
+    });
+
+    // Glisser-déposer (n'importe quelle dropzone ; le navigateur n'ouvre jamais le fichier)
+    const clearDrag = () => $$(".dropzone[data-drag]").forEach((z) => delete z.dataset.drag);
+    window.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      const dz = e.target instanceof Element ? e.target.closest(".dropzone") : null;
+      $$(".dropzone").forEach((z) => (z === dz ? (z.dataset.drag = "true") : delete z.dataset.drag));
+    });
+    window.addEventListener("dragleave", (e) => {
+      if (!e.relatedTarget) clearDrag();
+    });
+    window.addEventListener("drop", (e) => {
+      e.preventDefault();
+      const dz = e.target instanceof Element ? e.target.closest(".dropzone") : null;
+      clearDrag();
+      if (dz && e.dataTransfer) selectFiles(e.dataTransfer.files, dz.dataset.slot);
     });
 
     window.addEventListener("popstate", () => showTab(location.hash.slice(1), false));
@@ -1505,36 +2255,30 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
     detail.addEventListener("click", (e) => {
       if (e.target === detail || (e.target instanceof Element && e.target.closest("[data-close-detail]"))) detail.close();
     });
-
-    // Glisser-déposer
-    const dz = $("#dropzone");
-    const input = $("#file-input");
-    dz.addEventListener("click", (e) => {
-      if (e.target instanceof Element && e.target.closest("[data-action]")) return;
-      input.click();
-    });
-    input.addEventListener("click", (e) => e.stopPropagation());
-    input.addEventListener("change", () => {
-      selectFile(input.files && input.files[0]);
-      input.value = "";
-    });
-    dz.addEventListener("dragover", (e) => {
-      e.preventDefault();
-      dz.dataset.drag = "true";
-    });
-    dz.addEventListener("dragleave", () => delete dz.dataset.drag);
-    dz.addEventListener("drop", (e) => {
-      e.preventDefault();
-      delete dz.dataset.drag;
-      selectFile(e.dataTransfer && e.dataTransfer.files[0]);
+    const confirmDlg = $("#confirm");
+    confirmDlg.addEventListener("click", (e) => {
+      if (e.target === confirmDlg) confirmDlg.close("");
     });
 
-    // Calculateur de position : mise à jour en direct
-    const onCalc = (e) => {
-      if (e.target instanceof Element && e.target.matches("[data-calc-input]")) onCalcInput(e.target);
+    // Champs dynamiques : calculateur, checklist, statut du journal
+    const onField = (e) => {
+      const t = e.target instanceof Element ? e.target : null;
+      if (!t) return;
+      if (t.matches("[data-calc-input]")) onCalcInput(t);
+      else if (t.matches("[data-check]") && e.type === "change") onCheck(t);
+      else if (t.matches("[data-status-select]") && e.type === "change") setStatus(t.dataset.id, t.value);
     };
-    document.addEventListener("input", onCalc);
-    document.addEventListener("change", onCalc);
+    document.addEventListener("input", onField);
+    document.addEventListener("change", onField);
+
+    // Formulaire d'annonce macro
+    document.addEventListener("submit", (e) => {
+      if (e.target instanceof HTMLFormElement && e.target.id === "macro-form") {
+        e.preventDefault();
+        addManualEvent(e.target);
+        e.target.reset();
+      }
+    });
 
     // Ctrl+V / Cmd+V depuis n'importe quel onglet
     window.addEventListener("paste", (e) => {
@@ -1555,14 +2299,19 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
    * ========================================================= */
   function init() {
     state.history = loadHistory();
+    const savedStyle = local.get(CONFIG.KEYS.style);
+    if (STYLES[savedStyle]) state.style = savedStyle;
+    if (local.get(CONFIG.KEYS.mode) === "mtf") state.mode = "mtf";
+
     renderStatic();
     renderDemo();
     renderKeyStatus();
+    renderSlots();
     renderScanner();
     bindEvents();
     bindSettings();
-    bindDropzoneBorder();
-    $$(".mod-key").forEach((el) => (el.textContent = MOD_KEY));
+    initMacro();
+    setInterval(renderMacro, 30000);
     showTab(location.hash.slice(1), false);
 
     // Révèle la page une fois Tailwind appliqué (évite le flash non stylé)

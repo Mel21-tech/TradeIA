@@ -286,3 +286,70 @@ dialog::backdrop { animation: fade 0.25s ease; }
 .calc-field:focus-within { border-color: #06b6d4; box-shadow: 0 0 0 3px rgb(6 182 212 / 0.15); }
 select option { background: #0e131f; color: #f4f4f5; }
 .calc-field input:focus-visible, .calc-field select:focus-visible { outline: none; }
+
+/* ---------- Sélecteurs segmentés (style, mode) ---------- */
+.seg-btn { color: #71717a; }
+.seg-btn:hover { color: #e4e4e7; background: rgb(255 255 255 / 0.03); }
+.seg-btn[aria-checked="true"] {
+  color: #f4f4f5;
+  background: rgb(255 255 255 / 0.07);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.08), 0 0 24px -10px rgb(34 211 238 / 0.7);
+}
+.seg-btn[aria-checked="true"] .text-zinc-500 { color: #22d3ee; }
+.seg-btn:disabled { opacity: 0.5; pointer-events: none; }
+
+/* ---------- Slots d'images ---------- */
+.scan-overlay { display: none; }
+#slots[data-scanning="true"] .scan-overlay { display: block; }
+#slots[data-scanning="true"] .slot-img { opacity: 0.5; }
+#slots[data-scanning="true"] .slot-remove { display: none; }
+
+/* ---------- Checklist ---------- */
+.check {
+  appearance: none;
+  -webkit-appearance: none;
+  flex-shrink: 0;
+  width: 1.1rem;
+  height: 1.1rem;
+  border: 1.5px solid rgb(255 255 255 / 0.2);
+  border-radius: 0.35rem;
+  background: #07090e;
+  cursor: pointer;
+  transition: background-color 0.2s, border-color 0.2s, box-shadow 0.2s;
+}
+.check:checked {
+  border-color: #10b981;
+  background: #10b981 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2307090e' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E") center / 75% no-repeat;
+  box-shadow: 0 0 12px -2px rgb(16 185 129 / 0.7);
+}
+.check-row:has(.check:checked) { border-color: rgb(16 185 129 / 0.25); background: rgb(16 185 129 / 0.04); }
+.validated { box-shadow: 0 0 24px -6px rgb(16 185 129 / 0.8); animation: glow-pulse 2.2s ease-in-out infinite; }
+@keyframes glow-pulse { 50% { box-shadow: 0 0 36px -4px rgb(16 185 129 / 0.95); } }
+
+/* ---------- Journal ---------- */
+.status-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.5rem center;
+  background-size: 0.85rem;
+  transition: border-color 0.2s;
+}
+.status-select:hover { border-color: rgb(255 255 255 / 0.2); }
+.status-select[data-status="tp1"], .status-select[data-status="tp2"] { border-color: rgb(16 185 129 / 0.35); }
+.status-select[data-status="sl"] { border-color: rgb(225 29 72 / 0.35); }
+.status-select[data-status="open"] { border-color: rgb(34 211 238 / 0.35); }
+
+.btn-danger {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+  border-radius: 0.625rem; font-size: 0.875rem; font-weight: 500; cursor: pointer;
+  background: #e11d48; color: #fff;
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.1), 0 10px 30px -10px rgb(225 29 72 / 0.7);
+  transition: background-color 0.2s;
+}
+.btn-danger:hover { background: #f43f5e; }
+
+/* ---------- Alerte macro ---------- */
+.macro-alert { animation: alert-pulse 2s ease-in-out infinite; }
+@keyframes alert-pulse { 50% { box-shadow: 0 0 30px -8px rgb(225 29 72 / 0.6); } }
