@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
   <meta charset="utf-8" />
-  <!-- TradeIA v6 : logo intégré -->
+  <!-- TradeIA v7 -->
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>TradeIA — Analyse de graphiques par IA</title>
   <meta name="description" content="Dépose une capture de chandeliers japonais et obtiens un plan de trade structuré : entrée, stop, objectifs et R:R." />
@@ -19,7 +19,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=7" />
   <script>setTimeout(function () { document.documentElement.classList.add("is-ready"); }, 1200);</script>
 
   <!-- Tailwind CSS v4 (CDN navigateur) + thème TradeIA -->
@@ -43,7 +43,7 @@
 
   <!-- Icônes Lucide (version figée) -->
   <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
-  <script src="app.js" defer></script>
+  <script src="app.js?v=7" defer></script>
 </head>
 
 <body class="min-h-dvh overflow-x-clip bg-ink font-sans text-fg antialiased">
@@ -388,7 +388,7 @@
             <p>Données : TradeIA n’a pas de serveur. Les captures sont envoyées directement depuis ton navigateur à l’API d’Anthropic avec ta propre clé. La clé et l’historique restent stockés dans ton navigateur.</p>
           </div>
         </details>
-        <p>© <span id="year"></span> TradeIA. Analyse générée par IA, sans garantie d’exactitude.</p>
+        <p>© <span id="year"></span> TradeIA · version 7. Analyse générée par IA, sans garantie d’exactitude.</p>
       </div>
     </div>
   </footer>
