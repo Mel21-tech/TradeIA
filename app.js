@@ -522,40 +522,62 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
     }
     content.push({ type: "text", text: multi ? USER_PROMPT_MTF : USER_PROMPT });
 
-    const data = await callClaude({
-      model: getModel(),
-      max_tokens: 3000,
-      system: buildSystemPrompt(styleId, multi),
-      tools: ANALYSIS_TOOLS,
-      tool_choice: { type: "any" }, // oblige le modèle à répondre via un outil : JSON toujours valide
-      messages: [{ role: "user", content }],
-    });
-    const blocks = data && Array.isArray(data.content) ? data.content : [];
-    const call = blocks.find((b) => b.type === "tool_use");
+    const request = (messages) =>
+      callClaude({
+        model: getModel(),
+        max_tokens: 3000,
+        system: buildSystemPrompt(styleId, multi),
+        tools: ANALYSIS_TOOLS,
+        // tool_choice forcé non supporté par certains modèles : on laisse "auto" et le prompt impose l'outil
+        messages,
+      });
 
-    let json;
-    if (call) {
-      if (call.name === "reject_image") {
-        const msg = call.input && typeof call.input.message === "string" ? call.input.message : "";
-        throw new AppError(msg || "Cette image n’est pas un graphique exploitable.", "NOT_A_CHART");
+    /** Lit la réponse : appel d'outil (format normal) ou JSON en texte (repli). */
+    const parse = (data) => {
+      const blocks = data && Array.isArray(data.content) ? data.content : [];
+      const call = blocks.find((b) => b.type === "tool_use");
+      if (call) {
+        if (call.name === "reject_image") {
+          const msg = call.input && typeof call.input.message === "string" ? call.input.message : "";
+          throw new AppError(msg || "Cette image n’est pas un graphique exploitable.", "NOT_A_CHART");
+        }
+        return { json: call.input };
       }
-      json = call.input;
-    } else {
-      // Repli : ancien format texte
       const text = blocks.filter((b) => b.type === "text").map((b) => b.text).join("\n");
       try {
-        json = extractJson(text);
-      } catch {
-        const extract = text.trim().slice(0, 220);
-        throw new AppError(extract ? `L’IA n’a pas renvoyé de plan : « ${extract}${text.length > 220 ? "…" : ""} »` : "Réponse vide de l’IA. Relance l’analyse.", "PARSE");
+        const json = extractJson(text);
+        if (json && json.error === "NOT_A_CHART") {
+          throw new AppError(typeof json.message === "string" ? json.message : "Cette image n’est pas un graphique exploitable.", "NOT_A_CHART");
+        }
+        return { json };
+      } catch (e) {
+        if (e instanceof AppError) throw e;
+        return { json: null, text, blocks };
       }
-      if (json && json.error === "NOT_A_CHART") {
-        throw new AppError(typeof json.message === "string" ? json.message : "Cette image n’est pas un graphique exploitable.", "NOT_A_CHART");
-      }
+    };
+
+    const messages = [{ role: "user", content }];
+    let data = await request(messages);
+    let out = parse(data);
+
+    // L'IA a répondu en texte libre : on lui redemande une fois d'utiliser l'outil
+    if (!out.json) {
+      messages.push({ role: "assistant", content: out.blocks.length ? out.blocks : [{ type: "text", text: "…" }] });
+      messages.push({
+        role: "user",
+        content: "Réponds maintenant uniquement en appelant l'outil submit_trade_plan (ou reject_image si l'image est inexploitable).",
+      });
+      data = await request(messages);
+      out = parse(data);
     }
-    if (data && data.stop_reason === "max_tokens") {
-      throw new AppError("La réponse de l’IA a été coupée (trop longue). Relance l’analyse.", "PARSE");
+    if (!out.json) {
+      const extract = (out.text || "").trim().slice(0, 220);
+      throw new AppError(
+        extract ? `L’IA n’a pas renvoyé de plan : « ${extract}${out.text.length > 220 ? "…" : ""} »` : "Réponse vide de l’IA. Relance l’analyse.",
+        "PARSE",
+      );
     }
+    const json = out.json;
     const analysis = validateAnalysis(json);
     return { analysis, warnings: checkTradePlan(analysis, styleId) };
   }
