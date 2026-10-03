@@ -1,4 +1,4 @@
-# TradeIA — version statique (GitHub Pages)
+# TradeIA — version statique   (GitHub Pages)
 
 Application 100 % client : `index.html`, `styles.css`, `app.js`. Aucun serveur, aucune étape de build.
 
