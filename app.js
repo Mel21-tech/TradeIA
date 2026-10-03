@@ -76,7 +76,7 @@
     return `Tu es un trader senior spécialisé en Price Action et Smart Money Concepts (SMC), sur crypto, forex, indices et actions. Tu analyses ${multi ? "DEUX captures d'écran du même actif sur deux unités de temps" : "UNE capture d'écran de graphique en chandeliers japonais"} et tu produis un plan d'exécution calibré sur le style de trading demandé.
 
 # FORMAT DE SORTIE (OBLIGATOIRE)
-- Réponds UNIQUEMENT avec un objet JSON valide. Aucun texte avant ou après, aucune balise markdown, aucun \`\`\`.
+- Tu réponds UNIQUEMENT en appelant un outil : "submit_trade_plan" avec le plan complet, ou "reject_image" si l'image n'est pas exploitable. Jamais de texte libre.
 - Tous les prix sont des nombres (pas de chaînes, pas de séparateur de milliers, point comme séparateur décimal).
 - Le champ "rationale" est rédigé en français.
 
@@ -102,8 +102,10 @@ Structure exacte :
 }
 
 # CAS D'ÉCHEC
-Si l'image n'est PAS un graphique de prix exploitable (photo, texte, graphique illisible, aucune échelle de prix visible), réponds exactement :
-{"error": "NOT_A_CHART", "message": "<raison courte en français>"}
+Si l'image n'est PAS un graphique de prix exploitable (photo, texte, graphique illisible), appelle "reject_image" avec une raison courte en français.
+
+# ÉCHELLE EN POURCENTAGE
+Si l'axe de droite est en pourcentage (et non en prix), convertis chaque niveau en prix à partir du dernier prix affiché (étiquette ou en-tête du graphique). Si aucun prix absolu n'est lisible, appelle "reject_image" en demandant de repasser l'échelle en prix.
 
 ${style.prompt}
 ${multi ? `\n${MTF_PROMPT}\n` : ""}
@@ -463,6 +465,54 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
     });
   }
 
+  /* ---------- Sortie structurée garantie via « tool use » ---------- */
+  const PRICE = { type: "number", description: "Prix (nombre, point décimal, sans séparateur de milliers)" };
+  const ANALYSIS_TOOLS = [
+    {
+      name: "submit_trade_plan",
+      description: "Enregistre l'analyse technique et le plan de trade du graphique.",
+      input_schema: {
+        type: "object",
+        properties: {
+          asset_detected: { type: "string" },
+          timeframe_detected: { type: "string" },
+          current_price: PRICE,
+          trend: { type: "string", enum: ["Bullish", "Bearish", "Neutral"] },
+          key_patterns: { type: "array", items: { type: "string" } },
+          support_levels: { type: "array", items: PRICE },
+          resistance_levels: { type: "array", items: PRICE },
+          recommendation: { type: "string", enum: ["BUY", "SELL", "WAIT"] },
+          confidence_score: { type: "number", description: "0 à 100" },
+          trade_plan: {
+            type: "object",
+            properties: {
+              entry_price: { type: ["number", "string"], description: 'Prix limite (nombre) ou "Market"' },
+              stop_loss: PRICE,
+              take_profit_1: PRICE,
+              take_profit_2: PRICE,
+              risk_reward_ratio: { type: "string", description: 'Format "1:X"' },
+            },
+            required: ["entry_price", "stop_loss", "take_profit_1", "take_profit_2", "risk_reward_ratio"],
+          },
+          rationale: { type: "string", description: "4 à 8 phrases en français" },
+        },
+        required: [
+          "asset_detected", "timeframe_detected", "current_price", "trend", "key_patterns",
+          "support_levels", "resistance_levels", "recommendation", "confidence_score", "trade_plan", "rationale",
+        ],
+      },
+    },
+    {
+      name: "reject_image",
+      description: "À utiliser si l'image n'est pas un graphique de prix exploitable.",
+      input_schema: {
+        type: "object",
+        properties: { message: { type: "string", description: "Raison courte en français" } },
+        required: ["message"],
+      },
+    },
+  ];
+
   /** Envoie 1 image, ou 2 images (HTF puis LTF) avec leurs libellés, au modèle vision. */
   async function analyzeImages(images, styleId, multi) {
     const content = [];
@@ -474,18 +524,37 @@ Baisse la confiance si l'échelle de prix est difficile à lire, si l'unité de 
 
     const data = await callClaude({
       model: getModel(),
-      max_tokens: 2000,
+      max_tokens: 3000,
       system: buildSystemPrompt(styleId, multi),
+      tools: ANALYSIS_TOOLS,
+      tool_choice: { type: "any" }, // oblige le modèle à répondre via un outil : JSON toujours valide
       messages: [{ role: "user", content }],
     });
-    const text = (data && Array.isArray(data.content) ? data.content : [])
-      .filter((b) => b.type === "text")
-      .map((b) => b.text)
-      .join("\n");
+    const blocks = data && Array.isArray(data.content) ? data.content : [];
+    const call = blocks.find((b) => b.type === "tool_use");
 
-    const json = extractJson(text);
-    if (json && json.error === "NOT_A_CHART") {
-      throw new AppError(typeof json.message === "string" ? json.message : "Cette image n’est pas un graphique exploitable.", "NOT_A_CHART");
+    let json;
+    if (call) {
+      if (call.name === "reject_image") {
+        const msg = call.input && typeof call.input.message === "string" ? call.input.message : "";
+        throw new AppError(msg || "Cette image n’est pas un graphique exploitable.", "NOT_A_CHART");
+      }
+      json = call.input;
+    } else {
+      // Repli : ancien format texte
+      const text = blocks.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+      try {
+        json = extractJson(text);
+      } catch {
+        const extract = text.trim().slice(0, 220);
+        throw new AppError(extract ? `L’IA n’a pas renvoyé de plan : « ${extract}${text.length > 220 ? "…" : ""} »` : "Réponse vide de l’IA. Relance l’analyse.", "PARSE");
+      }
+      if (json && json.error === "NOT_A_CHART") {
+        throw new AppError(typeof json.message === "string" ? json.message : "Cette image n’est pas un graphique exploitable.", "NOT_A_CHART");
+      }
+    }
+    if (data && data.stop_reason === "max_tokens") {
+      throw new AppError("La réponse de l’IA a été coupée (trop longue). Relance l’analyse.", "PARSE");
     }
     const analysis = validateAnalysis(json);
     return { analysis, warnings: checkTradePlan(analysis, styleId) };
