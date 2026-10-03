@@ -5,7 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>TradeIA — Analyse de graphiques par IA</title>
   <meta name="description" content="Dépose une capture de chandeliers japonais et obtiens un plan de trade structuré : entrée, stop, objectifs et R:R." />
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%230b0e14'/><rect x='9.5' y='12' width='5' height='9' rx='1' fill='%2310b981'/><rect x='18' y='9' width='5' height='8' rx='1' fill='%2322d3ee'/></svg>" />
+  <!-- Icônes : onglet du navigateur, écran d'accueil iPhone, Android -->
+  <link rel="icon" type="image/png" href="icons/favicon-64.png" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <meta name="theme-color" content="#07090e" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="TradeIA" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black" />
 
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -43,14 +51,7 @@
   <header class="sticky top-0 z-40 border-b border-white/[0.08] bg-[#07090e]/80 backdrop-blur-lg">
     <div class="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
       <button data-nav="accueil" class="flex items-center gap-2.5 rounded-lg" aria-label="TradeIA, retour à l’accueil">
-        <svg viewBox="0 0 32 32" class="size-8" aria-hidden="true">
-          <defs><linearGradient id="tia-logo" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#10b981"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs>
-          <rect x="0.5" y="0.5" width="31" height="31" rx="8" fill="url(#tia-logo)" fill-opacity="0.12" stroke="url(#tia-logo)" stroke-opacity="0.55"/>
-          <line x1="12" y1="8" x2="12" y2="25" stroke="#10b981" stroke-width="1.5" stroke-linecap="round"/>
-          <rect x="9.5" y="12" width="5" height="9" rx="1" fill="#10b981"/>
-          <line x1="20.5" y1="6" x2="20.5" y2="21" stroke="#22d3ee" stroke-width="1.5" stroke-linecap="round"/>
-          <rect x="18" y="9" width="5" height="8" rx="1" fill="#22d3ee"/>
-        </svg>
+        <img src="icons/logo-mark.png" alt="" width="32" height="32" class="size-8 rounded-lg border border-white/[0.1] shadow-[0_0_18px_-4px_rgb(34_211_238/0.6)]" />
         <span class="text-[15px] font-semibold tracking-tight">TradeIA</span>
       </button>
 
