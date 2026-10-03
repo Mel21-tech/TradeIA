@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TradeIA — Analyse de graphiques par IA</title>
+  <meta name="description" content="Dépose une capture de chandeliers japonais et obtiens un plan de trade structuré : entrée, stop, objectifs et R:R." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%230b0e14'/><rect x='9.5' y='12' width='5' height='9' rx='1' fill='%2310b981'/><rect x='18' y='9' width='5' height='8' rx='1' fill='%2322d3ee'/></svg>" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+
+  <!-- Tailwind CSS v4 (CDN navigateur) + thème TradeIA -->
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.1.13"></script>
+  <style type="text/tailwindcss">
+    @theme {
+      --color-ink: #0b0e14;
+      --color-panel: #11151d;
+      --color-line: #27272a;
+      --color-fg: #e4e4e7;
+      --color-muted: #a1a1aa;
+      --color-buy: #10b981;
+      --color-sell: #e11d48;
+      --color-wait: #f59e0b;
+      --color-accent: #22d3ee;
+      --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+      --font-mono: "Geist Mono", ui-monospace, monospace;
+      --animate-scan: scan 1.8s ease-in-out infinite alternate;
+      --animate-tab-in: tab-in 0.35s cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+  </style>
+
+  <!-- Icônes Lucide (version figée) -->
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+
+<body class="min-h-dvh overflow-x-clip bg-ink font-sans text-fg antialiased">
+  <!-- ================= NAVBAR ================= -->
+  <header class="sticky top-0 z-40 border-b border-line/70 bg-ink/70 backdrop-blur-xl">
+    <div class="mx-auto flex h-16 max-w-6xl items-center justify-between gap-4 px-4 sm:px-6">
+      <button data-nav="accueil" class="flex items-center gap-2.5 rounded-lg" aria-label="TradeIA, retour à l’accueil">
+        <svg viewBox="0 0 32 32" class="size-8" aria-hidden="true">
+          <defs><linearGradient id="tia-logo" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#10b981"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs>
+          <rect x="0.5" y="0.5" width="31" height="31" rx="8" fill="url(#tia-logo)" fill-opacity="0.12" stroke="url(#tia-logo)" stroke-opacity="0.55"/>
+          <line x1="12" y1="8" x2="12" y2="25" stroke="#10b981" stroke-width="1.5" stroke-linecap="round"/>
+          <rect x="9.5" y="12" width="5" height="9" rx="1" fill="#10b981"/>
+          <line x1="20.5" y1="6" x2="20.5" y2="21" stroke="#22d3ee" stroke-width="1.5" stroke-linecap="round"/>
+          <rect x="18" y="9" width="5" height="8" rx="1" fill="#22d3ee"/>
+        </svg>
+        <span class="text-[15px] font-semibold tracking-tight">TradeIA</span>
+      </button>
+
+      <nav aria-label="Navigation principale" class="hidden md:block">
+        <ul class="tab-list flex gap-1 rounded-xl border border-line/80 bg-white/[0.02] p-1"></ul>
+      </nav>
+
+      <button id="key-status" class="flex items-center gap-2 rounded-full border border-line bg-white/[0.03] px-3 py-1.5 text-xs text-muted transition-colors hover:border-zinc-600 hover:text-fg"></button>
+    </div>
+    <nav aria-label="Navigation principale" class="overflow-x-auto border-t border-line/70 px-4 py-2 md:hidden">
+      <ul class="tab-list flex w-max gap-1 rounded-xl border border-line/80 bg-white/[0.02] p-1"></ul>
+    </nav>
+  </header>
+
+  <main class="mx-auto max-w-6xl px-4 sm:px-6">
+    <!-- ================= ACCUEIL ================= -->
+    <section data-tab="accueil">
+      <div class="relative isolate pb-20 pt-20 text-center sm:pt-28">
+        <div aria-hidden="true" class="pointer-events-none absolute inset-x-0 -top-16 -z-10 h-[640px]">
+          <div class="absolute left-1/2 top-0 h-[420px] w-[620px] -translate-x-[75%] rounded-full bg-buy/20 blur-[120px]"></div>
+          <div class="absolute left-1/2 top-20 h-[380px] w-[560px] -translate-x-[15%] rounded-full bg-accent/15 blur-[120px]"></div>
+          <div class="hero-grid absolute inset-0"></div>
+        </div>
+
+        <div class="inline-flex items-center gap-2 rounded-full border border-line bg-white/[0.04] px-3 py-1 text-xs text-zinc-300 backdrop-blur">
+          <span class="pulse-dot bg-accent"></span>
+          Propulsé par <span id="hero-model">Claude</span> Vision
+        </div>
+
+        <h1 class="mx-auto mt-6 max-w-4xl bg-linear-to-b from-white to-zinc-400 bg-clip-text text-5xl font-semibold leading-[1.05] tracking-[-0.04em] text-transparent sm:text-7xl">
+          Lis ton graphique comme un desk institutionnel.
+        </h1>
+        <p class="mx-auto mt-6 max-w-2xl text-lg leading-relaxed text-muted">
+          Dépose une capture de chandeliers. L’IA lit la structure, la liquidité et les zones clés, puis te rend un plan chiffré : entrée, stop, objectifs et ratio risque/rendement.
+        </p>
+        <div class="mt-10 flex flex-wrap justify-center gap-3">
+          <button data-nav="analyseur" class="btn-primary h-12 px-6 text-base">Lancer l’analyseur <i data-lucide="arrow-right" class="size-4"></i></button>
+          <button data-nav="methode" class="btn-outline h-12 px-6 text-base"><i data-lucide="book-open" class="size-4"></i> Voir la méthode</button>
+        </div>
+        <p class="mt-5 text-sm text-zinc-500">Sans inscription ni serveur. Ta clé API reste dans ton navigateur.</p>
+
+        <!-- Aperçu interactif -->
+        <div class="relative mx-auto mt-20 max-w-5xl text-left">
+          <div aria-hidden="true" class="absolute -inset-x-10 -top-10 bottom-1/2 -z-10 rounded-full bg-accent/10 blur-3xl"></div>
+          <div class="rounded-2xl bg-linear-to-b from-white/20 via-white/[0.06] to-transparent p-px">
+            <div class="rounded-[15px] bg-ink/90 backdrop-blur-xl">
+              <div class="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3 sm:px-6">
+                <span class="text-sm text-muted">Exemple de résultat, données fictives</span>
+                <div role="tablist" aria-label="Scénarios d’exemple" class="flex gap-1 rounded-lg bg-white/[0.03] p-1">
+                  <button role="tab" data-demo="BUY" aria-selected="true" class="rounded-md px-3 py-1 text-xs font-medium text-muted transition-colors hover:text-fg aria-selected:bg-buy/15 aria-selected:text-buy">BTC/USDT</button>
+                  <button role="tab" data-demo="SELL" aria-selected="false" class="rounded-md px-3 py-1 text-xs font-medium text-muted transition-colors hover:text-fg aria-selected:bg-sell/15 aria-selected:text-sell">EUR/USD</button>
+                  <button role="tab" data-demo="WAIT" aria-selected="false" class="rounded-md px-3 py-1 text-xs font-medium text-muted transition-colors hover:text-fg aria-selected:bg-wait/15 aria-selected:text-wait">NVDA</button>
+                </div>
+              </div>
+              <div class="relative max-h-[640px] overflow-hidden p-4 sm:p-6">
+                <div id="demo-dashboard"></div>
+                <div aria-hidden="true" class="pointer-events-none absolute inset-x-0 bottom-0 h-48 bg-linear-to-t from-ink to-transparent"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Comment ça marche -->
+      <div class="py-20">
+        <div class="max-w-2xl">
+          <h2 class="text-3xl font-semibold tracking-tight sm:text-4xl">Comment ça marche</h2>
+          <p class="mt-3 text-muted">Trois étapes, une trentaine de secondes.</p>
+        </div>
+        <ol class="relative mt-12 grid gap-4 md:grid-cols-3">
+          <div aria-hidden="true" class="absolute left-[16%] right-[16%] top-8 hidden h-px bg-linear-to-r from-buy/50 via-accent/50 to-buy/50 md:block"></div>
+          <li class="glass relative h-full p-6 transition-colors duration-200 hover:border-zinc-600">
+            <div class="flex items-center gap-3"><div class="grid size-11 place-items-center rounded-xl border border-line bg-ink"><i data-lucide="image-plus" class="size-5 text-accent"></i></div><span class="font-mono text-xs text-zinc-500">Étape 1</span></div>
+            <h3 class="mt-5 text-lg font-medium">Capture ton écran</h3>
+            <p class="mt-2 text-sm leading-relaxed text-muted">Fais une capture de ton graphique sur TradingView ou ta plateforme, puis colle-la avec Ctrl+V.</p>
+          </li>
+          <li class="glass relative h-full p-6 transition-colors duration-200 hover:border-zinc-600">
+            <div class="flex items-center gap-3"><div class="grid size-11 place-items-center rounded-xl border border-line bg-ink"><i data-lucide="scan-search" class="size-5 text-accent"></i></div><span class="font-mono text-xs text-zinc-500">Étape 2</span></div>
+            <h3 class="mt-5 text-lg font-medium">L’IA scanne la structure</h3>
+            <p class="mt-2 text-sm leading-relaxed text-muted">Structure de marché, liquidité, order blocks, FVG et rejets de mèches sont lus dans un ordre précis.</p>
+          </li>
+          <li class="glass relative h-full p-6 transition-colors duration-200 hover:border-zinc-600">
+            <div class="flex items-center gap-3"><div class="grid size-11 place-items-center rounded-xl border border-line bg-ink"><i data-lucide="crosshair" class="size-5 text-accent"></i></div><span class="font-mono text-xs text-zinc-500">Étape 3</span></div>
+            <h3 class="mt-5 text-lg font-medium">Récupère ton plan</h3>
+            <p class="mt-2 text-sm leading-relaxed text-muted">Entrée, stop-loss, deux objectifs et le R:R, vérifiés mathématiquement avant affichage.</p>
+          </li>
+        </ol>
+      </div>
+
+      <!-- Bento -->
+      <div class="py-20">
+        <div class="max-w-2xl">
+          <h2 class="text-3xl font-semibold tracking-tight sm:text-4xl">Une lecture de marché complète</h2>
+          <p class="mt-3 text-muted">Le modèle suit la même grille d’analyse à chaque scan, et chaque plan passe par des contrôles de cohérence.</p>
+        </div>
+        <div class="mt-12 grid gap-4 md:grid-cols-3">
+          <article class="glass bento md:col-span-2">
+            <div><i data-lucide="layers" class="size-5 text-accent"></i><h3 class="mt-4 text-lg font-medium">Analyse institutionnelle</h3><p class="mt-2 max-w-md text-sm leading-relaxed text-muted">Une grille en sept étapes, du contexte aux indicateurs visibles. Une cassure ne compte que si une bougie clôture au-delà du niveau.</p></div>
+            <ol id="flow-chips" class="flex flex-wrap items-center gap-1.5"></ol>
+          </article>
+          <article class="glass bento">
+            <div><i data-lucide="sparkles" class="size-5 text-accent"></i><h3 class="mt-4 text-lg font-medium">Order blocks et FVG</h3><p class="mt-2 text-sm leading-relaxed text-muted">Détection des zones où l’impulsion est née et des déséquilibres laissés derrière.</p></div>
+            <svg viewBox="0 0 200 120" class="h-28 w-full" aria-hidden="true">
+              <rect x="10" y="44" width="180" height="22" fill="#22d3ee" fill-opacity="0.12"/>
+              <line x1="10" y1="44" x2="190" y2="44" stroke="#22d3ee" stroke-opacity="0.5" stroke-dasharray="3 3"/>
+              <line x1="10" y1="66" x2="190" y2="66" stroke="#22d3ee" stroke-opacity="0.5" stroke-dasharray="3 3"/>
+              <text x="186" y="59" text-anchor="end" font-size="9" fill="#22d3ee">FVG</text>
+              <rect x="22" y="76" width="34" height="26" rx="2" fill="#e11d48" fill-opacity="0.25" stroke="#e11d48" stroke-opacity="0.7"/>
+              <text x="39" y="115" text-anchor="middle" font-size="8" fill="#a1a1aa">OB</text>
+              <line x1="80" y1="66" x2="80" y2="112" stroke="#10b981"/><rect x="66" y="70" width="28" height="38" rx="2" fill="#10b981" fill-opacity="0.35" stroke="#10b981"/>
+              <line x1="120" y1="12" x2="120" y2="78" stroke="#10b981"/><rect x="106" y="18" width="28" height="56" rx="2" fill="#10b981" fill-opacity="0.35" stroke="#10b981"/>
+              <line x1="160" y1="6" x2="160" y2="44" stroke="#10b981"/><rect x="146" y="10" width="28" height="28" rx="2" fill="#10b981" fill-opacity="0.35" stroke="#10b981"/>
+            </svg>
+          </article>
+          <article class="glass bento">
+            <div><i data-lucide="shield-check" class="size-5 text-accent"></i><h3 class="mt-4 text-lg font-medium">Gestion du risque</h3><p class="mt-2 text-sm leading-relaxed text-muted">Stop derrière une invalidation structurelle, R:R minimal de 1:1,5 vers TP1, recalculé dans ton navigateur.</p></div>
+            <div class="space-y-3.5">
+              <div class="flex items-center gap-3"><span class="w-12 text-xs text-buy">TP2</span><span class="h-px w-full bg-buy"></span></div>
+              <div class="flex items-center gap-3"><span class="w-12 text-xs text-buy">TP1</span><span class="h-px w-4/5 bg-buy/60"></span></div>
+              <div class="flex items-center gap-3"><span class="w-12 text-xs text-accent">Entrée</span><span class="h-px w-3/5 bg-accent"></span></div>
+              <div class="flex items-center gap-3"><span class="w-12 text-xs text-sell">SL</span><span class="h-px w-2/5 bg-sell"></span></div>
+            </div>
+          </article>
+          <article class="glass bento md:col-span-2">
+            <div><i data-lucide="gauge" class="size-5 text-accent"></i><h3 class="mt-4 text-lg font-medium">Score de confiance</h3><p class="mt-2 max-w-md text-sm leading-relaxed text-muted">Chaque analyse est notée selon le nombre de confluences et la lisibilité de l’image. Sous 40, le modèle recommande d’attendre.</p></div>
+            <div class="space-y-3">
+              <div class="grid grid-cols-[3.5rem_1fr] items-center gap-3"><span class="font-mono text-xs text-zinc-400">80–100</span><div><div class="h-1.5 rounded-full bg-white/[0.05]"><div class="h-full w-[90%] rounded-full bg-buy"></div></div><p class="mt-1 text-xs text-zinc-500">Confluence forte et R:R d’au moins 1:2</p></div></div>
+              <div class="grid grid-cols-[3.5rem_1fr] items-center gap-3"><span class="font-mono text-xs text-zinc-400">60–79</span><div><div class="h-1.5 rounded-full bg-white/[0.05]"><div class="h-full w-[70%] rounded-full bg-accent"></div></div><p class="mt-1 text-xs text-zinc-500">Setup propre, une confluence manque</p></div></div>
+              <div class="grid grid-cols-[3.5rem_1fr] items-center gap-3"><span class="font-mono text-xs text-zinc-400">40–59</span><div><div class="h-1.5 rounded-full bg-white/[0.05]"><div class="h-full w-[50%] rounded-full bg-wait"></div></div><p class="mt-1 text-xs text-zinc-500">Setup spéculatif ou image partielle</p></div></div>
+              <div class="grid grid-cols-[3.5rem_1fr] items-center gap-3"><span class="font-mono text-xs text-zinc-400">0–39</span><div><div class="h-1.5 rounded-full bg-white/[0.05]"><div class="h-full w-[25%] rounded-full bg-sell"></div></div><p class="mt-1 text-xs text-zinc-500">Lecture incertaine, l’IA recommande d’attendre</p></div></div>
+            </div>
+          </article>
+        </div>
+      </div>
+
+      <!-- CTA final -->
+      <div class="py-12">
+        <div class="glass relative overflow-hidden px-6 py-14 text-center">
+          <div aria-hidden="true" class="absolute left-1/2 top-0 h-48 w-[60%] -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent/20 blur-3xl"></div>
+          <h2 class="relative text-3xl font-semibold tracking-tight">Ton prochain setup mérite un second avis.</h2>
+          <p class="relative mx-auto mt-3 max-w-lg text-muted">Teste l’analyseur sur une capture de ton choix et compare avec ta propre lecture.</p>
+          <button data-nav="analyseur" class="btn-primary relative mt-8 h-12 px-6 text-base">Lancer l’analyseur <i data-lucide="arrow-right" class="size-4"></i></button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= ANALYSEUR ================= -->
+    <section data-tab="analyseur" hidden class="space-y-8 pb-8 pt-12">
+      <header>
+        <h1 class="text-3xl font-semibold tracking-tight">Analyseur</h1>
+        <p class="mt-2 text-muted">Importe une capture de chandeliers japonais pour obtenir un plan de trade.</p>
+      </header>
+
+      <div class="grid gap-6 lg:grid-cols-[1fr_320px]">
+        <div class="space-y-3">
+          <div id="dropzone" role="button" tabindex="0" aria-label="Importer une capture de graphique"
+               class="group flex min-h-[380px] cursor-pointer flex-col items-center justify-center gap-4 rounded-xl border border-dashed border-zinc-700 bg-white/[0.02] px-6 text-center transition-all duration-200 hover:border-zinc-500 hover:bg-white/[0.03] data-[drag=true]:scale-[1.01] data-[drag=true]:border-accent data-[drag=true]:bg-accent/[0.06] data-[drag=true]:shadow-[0_0_60px_-15px_rgb(34_211_238/0.6)]">
+            <div class="grid size-14 place-items-center rounded-xl border border-line bg-panel transition-colors group-hover:border-accent/40"><i data-lucide="image-up" class="size-6 text-accent"></i></div>
+            <div>
+              <p class="text-base font-medium">Dépose ta capture de graphique ici</p>
+              <p class="mt-1 text-sm text-muted">Clique pour choisir un fichier, ou colle-la avec Ctrl+V.</p>
+            </div>
+            <p class="text-xs text-zinc-500">PNG, JPG ou WEBP, 5 Mo max</p>
+            <input id="file-input" type="file" accept="image/png,image/jpeg,image/webp" class="hidden" />
+          </div>
+
+          <div id="preview" hidden class="relative overflow-hidden rounded-xl border border-line bg-black/40">
+            <img id="preview-img" alt="Capture du graphique à analyser" class="block max-h-[520px] w-full object-contain transition-opacity duration-300" />
+            <div id="scan-overlay" hidden>
+              <div class="pointer-events-none absolute inset-0 bg-accent/[0.04]"></div>
+              <div class="pointer-events-none absolute inset-x-0 h-px bg-accent shadow-[0_0_24px_6px_rgb(34_211_238/0.45)] motion-safe:animate-scan motion-reduce:top-1/2"></div>
+            </div>
+          </div>
+
+          <p id="scanner-error" role="alert" hidden class="flex items-center gap-2 text-sm text-sell"></p>
+        </div>
+
+        <aside id="scanner-side" class="glass h-fit p-5"></aside>
+      </div>
+
+      <div id="scanner-result"></div>
+
+      <aside class="flex gap-3 rounded-xl border border-line bg-white/[0.02] p-4 text-xs leading-relaxed text-muted">
+        <i data-lucide="shield-alert" class="mt-0.5 size-4 shrink-0 text-wait"></i>
+        <p>Cette analyse est générée automatiquement par une IA à partir d’une image. Elle peut contenir des erreurs de lecture des prix et ne constitue ni un conseil en investissement ni une recommandation personnalisée. Le trading comporte un risque de perte en capital. Vérifie chaque niveau sur ta plateforme et ne risque que ce que tu peux te permettre de perdre.</p>
+      </aside>
+    </section>
+
+    <!-- ================= STRATÉGIE & MÉTHODE ================= -->
+    <section data-tab="methode" hidden class="space-y-12 pb-8 pt-12">
+      <header class="max-w-2xl">
+        <h1 class="text-3xl font-semibold tracking-tight">Stratégie et méthode</h1>
+        <p class="mt-3 leading-relaxed text-muted">Les concepts que l’IA cherche sur chaque capture, issus des Smart Money Concepts et de la Price Action. Les connaître te permet de vérifier son raisonnement plutôt que de le suivre aveuglément.</p>
+      </header>
+
+      <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        <article class="glass concept">
+          <div class="diagram">
+            <svg viewBox="0 0 220 130" class="h-32 w-full" aria-hidden="true">
+              <line x1="118" y1="45" x2="200" y2="45" stroke="#22d3ee" stroke-dasharray="3 3"/>
+              <text x="196" y="40" text-anchor="end" font-size="9" fill="#22d3ee">BOS</text>
+              <polyline points="10,115 50,70 80,92 118,45 150,68 200,18" fill="none" stroke="#10b981" stroke-width="2" stroke-linejoin="round"/>
+              <text x="50" y="62" text-anchor="middle" font-size="9" fill="#a1a1aa">H</text>
+              <text x="80" y="106" text-anchor="middle" font-size="9" fill="#a1a1aa">HL</text>
+              <text x="118" y="37" text-anchor="middle" font-size="9" fill="#a1a1aa">HH</text>
+              <text x="150" y="82" text-anchor="middle" font-size="9" fill="#a1a1aa">HL</text>
+            </svg>
+          </div>
+          <h2 class="text-lg font-medium">Structure de marché</h2>
+          <p class="mt-2 text-sm leading-relaxed text-muted">La tendance se lit dans la succession des sommets et des creux. Tant qu’elle tient, on trade dans son sens.</p>
+          <ul class="points"><li>Haussière : sommets et creux de plus en plus hauts (HH / HL).</li><li>BOS : cassure d’un sommet ou d’un creux dans le sens de la tendance, validée en clôture.</li><li>CHoCH : première cassure contre la tendance, premier signe de retournement.</li></ul>
+        </article>
+
+        <article class="glass concept">
+          <div class="diagram">
+            <svg viewBox="0 0 220 130" class="h-32 w-full" aria-hidden="true">
+              <line x1="10" y1="40" x2="210" y2="40" stroke="#f59e0b" stroke-dasharray="3 3"/>
+              <text x="14" y="34" font-size="9" fill="#f59e0b">Liquidité (equal highs)</text>
+              <polyline points="10,110 50,40 80,82 120,40 150,86 172,24 190,64 212,120" fill="none" stroke="#a1a1aa" stroke-width="2" stroke-linejoin="round"/>
+              <circle cx="172" cy="24" r="4" fill="none" stroke="#e11d48" stroke-width="1.5"/>
+              <text x="172" y="14" text-anchor="middle" font-size="9" fill="#e11d48">Sweep</text>
+            </svg>
+          </div>
+          <h2 class="text-lg font-medium">Liquidité</h2>
+          <p class="mt-2 text-sm leading-relaxed text-muted">Les ordres stop s’accumulent au-dessus des sommets et sous les creux évidents. Le prix va souvent les chercher avant de repartir.</p>
+          <ul class="points"><li>Equal highs et equal lows : zones de stops très visibles.</li><li>Sweep : mèche qui dépasse le niveau puis réintégration rapide.</li><li>Un sweep suivi d’un CHoCH est l’un des déclencheurs les plus suivis.</li></ul>
+        </article>
+
+        <article class="glass concept">
+          <div class="diagram">
+            <svg viewBox="0 0 220 130" class="h-32 w-full" aria-hidden="true">
+              <rect x="10" y="52" width="200" height="24" fill="#22d3ee" fill-opacity="0.12"/>
+              <text x="206" y="68" text-anchor="end" font-size="9" fill="#22d3ee">FVG</text>
+              <line x1="60" y1="76" x2="60" y2="122" stroke="#10b981"/><rect x="47" y="82" width="26" height="32" rx="2" fill="#10b981" fill-opacity="0.35" stroke="#10b981"/>
+              <line x1="110" y1="16" x2="110" y2="96" stroke="#10b981"/><rect x="97" y="22" width="26" height="68" rx="2" fill="#10b981" fill-opacity="0.35" stroke="#10b981"/>
+              <line x1="160" y1="8" x2="160" y2="52" stroke="#10b981"/><rect x="147" y="12" width="26" height="32" rx="2" fill="#10b981" fill-opacity="0.35" stroke="#10b981"/>
+            </svg>
+          </div>
+          <h2 class="text-lg font-medium">Fair value gaps</h2>
+          <p class="mt-2 text-sm leading-relaxed text-muted">Un déplacement violent laisse un vide entre la bougie 1 et la bougie 3. Le prix revient souvent le combler partiellement.</p>
+          <ul class="points"><li>Zone d’entrée potentielle lors du retour du prix.</li><li>Plus pertinent s’il est aligné avec la structure.</li><li>Un FVG comblé en clôture perd sa valeur.</li></ul>
+        </article>
+
+        <article class="glass concept">
+          <h2 class="text-lg font-medium">Order blocks</h2>
+          <p class="mt-2 text-sm leading-relaxed text-muted">La dernière bougie opposée avant une impulsion qui casse la structure. Elle marque une zone où des ordres importants ont été placés.</p>
+          <ul class="points"><li>Valide seulement si l’impulsion qui suit casse un niveau clé.</li><li>Le premier retour dans la zone est le plus significatif.</li><li>Le stop se place de l’autre côté du bloc.</li></ul>
+        </article>
+
+        <article class="glass concept">
+          <h2 class="text-lg font-medium">Cassures et retests</h2>
+          <p class="mt-2 text-sm leading-relaxed text-muted">Un support cassé devient souvent résistance, et inversement. Le retest confirme la cassure.</p>
+          <ul class="points"><li>Une mèche au-delà du niveau n’est pas une cassure : il faut une clôture.</li><li>Retest qui tient : rejet net, mèche longue, bougie englobante.</li><li>Retest qui échoue : fausse cassure, souvent un piège à liquidité.</li></ul>
+        </article>
+
+        <article class="glass concept">
+          <h2 class="text-lg font-medium">Invalidation</h2>
+          <p class="mt-2 text-sm leading-relaxed text-muted">Chaque plan a un point précis où l’idée devient fausse. C’est là que se place le stop, pas à une distance arbitraire.</p>
+          <ul class="points"><li>Au-delà du dernier swing qui protège le scénario.</li><li>Derrière la mèche du sweep ou l’order block d’entrée.</li><li>Si le stop logique est trop loin, le trade ne vaut pas le coup : on attend.</li></ul>
+        </article>
+      </div>
+
+      <div class="glass grid gap-8 p-6 md:grid-cols-2 md:p-8">
+        <div>
+          <i data-lucide="calculator" class="size-5 text-accent"></i>
+          <h2 class="mt-4 text-xl font-medium">Gestion du risque</h2>
+          <p class="mt-2 text-sm leading-relaxed text-muted">Le plan donne les niveaux, à toi de dimensionner la position. La règle la plus répandue consiste à ne risquer qu’un petit pourcentage fixe du capital par trade, quel que soit le niveau de confiance.</p>
+          <ul class="mt-4 space-y-2 text-sm text-zinc-300">
+            <li>R:R = |Objectif − Entrée| ÷ |Entrée − Stop|</li>
+            <li>Taux de réussite minimum pour être rentable = 1 ÷ (1 + R)</li>
+            <li>Avec un R:R de 1:2, il suffit d’avoir raison une fois sur trois.</li>
+          </ul>
+        </div>
+        <div class="rounded-xl border border-line bg-ink/60 p-5 font-mono text-sm">
+          <p class="text-muted">Taille de position</p>
+          <p class="mt-1 text-accent">(Capital × % risqué) ÷ |Entrée − Stop|</p>
+          <div class="mt-5 space-y-1.5 text-zinc-300">
+            <p>Capital : 10 000 $, risque 1 % = 100 $</p>
+            <p>BTC : entrée 67 250, stop 66 380</p>
+            <p>Écart : 870 $</p>
+            <p class="pt-2 text-buy">Position : 100 ÷ 870 ≈ 0,115 BTC</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid gap-4 md:grid-cols-2">
+        <div class="glass p-6">
+          <i data-lucide="eye" class="size-5 text-accent"></i>
+          <h2 class="mt-4 text-lg font-medium">Ce que l’IA voit</h2>
+          <p class="mt-2 text-sm leading-relaxed text-muted">Uniquement les pixels de ta capture : bougies, échelle de prix, indicateurs affichés. Elle n’a accès ni au carnet d’ordres, ni aux actualités, ni aux unités de temps supérieures si tu ne les montres pas.</p>
+        </div>
+        <div class="glass p-6">
+          <i data-lucide="octagon-alert" class="size-5 text-wait"></i>
+          <h2 class="mt-4 text-lg font-medium">Ses limites</h2>
+          <p class="mt-2 text-sm leading-relaxed text-muted">La lecture des prix sur l’axe reste approximative, surtout avec beaucoup de décimales. Le modèle ne prédit pas le marché : il structure une lecture technique. Vérifie toujours les niveaux sur ta plateforme avant de placer un ordre.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= HISTORIQUE ================= -->
+    <section data-tab="historique" hidden class="pb-8 pt-12">
+      <div id="history-root"></div>
+    </section>
+  </main>
+
+  <!-- ================= FOOTER ================= -->
+  <footer class="mt-24 border-t border-line/70 bg-black/20">
+    <div class="mx-auto grid max-w-6xl gap-10 px-4 py-12 sm:px-6 md:grid-cols-[1.2fr_0.8fr_1.6fr]">
+      <div>
+        <p class="font-semibold tracking-tight">TradeIA</p>
+        <p class="mt-3 max-w-xs text-sm leading-relaxed text-muted">Analyse technique de captures de graphiques par IA, pensée pour structurer ta prise de décision.</p>
+      </div>
+      <nav aria-label="Liens du pied de page">
+        <h2 class="text-sm font-medium">Navigation</h2>
+        <ul id="footer-links" class="mt-3 space-y-2 text-sm"></ul>
+      </nav>
+      <div>
+        <h2 class="text-sm font-medium">Avertissement sur les risques</h2>
+        <p class="mt-3 text-sm leading-relaxed text-muted">Les contenus générés par TradeIA sont fournis à titre informatif et pédagogique. Ils ne constituent pas un conseil en investissement, une recommandation personnalisée ni une incitation à acheter ou vendre un instrument financier. Les CFD, le forex et les crypto-actifs sont des produits à fort effet de levier : une majorité de comptes de particuliers perdent de l’argent. Les performances passées ne préjugent pas des performances futures.</p>
+      </div>
+    </div>
+    <div class="border-t border-line/70">
+      <div class="mx-auto max-w-6xl space-y-4 px-4 py-6 text-xs text-zinc-500 sm:px-6">
+        <details class="group">
+          <summary class="cursor-pointer list-none text-muted hover:text-fg">Mentions légales <span class="inline-block transition-transform group-open:rotate-90">›</span></summary>
+          <div class="mt-3 max-w-3xl space-y-2 leading-relaxed">
+            <p>Éditeur : [Nom ou raison sociale], [adresse], [e-mail de contact].</p>
+            <p>Directeur de la publication : [Nom].</p>
+            <p>Hébergeur : GitHub Inc., 88 Colin P. Kelly Jr. Street, San Francisco, CA 94107, États-Unis.</p>
+            <p>Données : TradeIA n’a pas de serveur. Les captures sont envoyées directement depuis ton navigateur à l’API d’Anthropic avec ta propre clé. La clé et l’historique restent stockés dans ton navigateur.</p>
+          </div>
+        </details>
+        <p>© <span id="year"></span> TradeIA. Analyse générée par IA, sans garantie d’exactitude.</p>
+      </div>
+    </div>
+  </footer>
+
+  <!-- ================= RÉGLAGES (clé API) ================= -->
+  <dialog id="settings" class="m-auto w-[min(520px,calc(100vw-2rem))] rounded-2xl border border-line bg-panel p-0 text-fg backdrop:bg-black/70 backdrop:backdrop-blur-sm">
+    <form method="dialog" id="settings-form" class="space-y-5 p-6">
+      <div class="flex items-start justify-between gap-4">
+        <div>
+          <h2 class="text-lg font-semibold">Réglages de l’API</h2>
+          <p class="mt-1 text-sm text-muted">Ta clé est utilisée uniquement depuis ce navigateur, pour appeler l’API d’Anthropic.</p>
+        </div>
+        <button type="button" data-close class="rounded-md p-1 text-muted hover:text-fg" aria-label="Fermer"><i data-lucide="x" class="size-4"></i></button>
+      </div>
+
+      <label class="block">
+        <span class="text-sm font-medium">Clé API Anthropic</span>
+        <div class="mt-2 flex gap-2">
+          <input id="key-input" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-..." class="field flex-1 font-mono" />
+          <button type="button" id="key-toggle" class="btn-outline h-10 w-10 px-0" aria-label="Afficher la clé"><i data-lucide="eye" class="size-4"></i></button>
+        </div>
+        <span class="mt-1.5 block text-xs text-zinc-500">Crée une clé sur <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener" class="text-accent hover:underline">console.anthropic.com</a>. Fixe une limite de dépense sur ton compte.</span>
+      </label>
+
+      <label class="block">
+        <span class="text-sm font-medium">Modèle</span>
+        <input id="model-input" list="model-list" spellcheck="false" class="field mt-2 w-full font-mono" />
+        <datalist id="model-list">
+          <option value="claude-sonnet-5-5"></option>
+          <option value="claude-opus-5-5"></option>
+          <option value="claude-haiku-4-5-20251001"></option>
+        </datalist>
+      </label>
+
+      <label class="flex items-center gap-2.5 text-sm">
+        <input id="remember-input" type="checkbox" class="size-4 accent-[#22d3ee]" />
+        Mémoriser la clé sur cet appareil (localStorage)
+      </label>
+
+      <p id="key-test-result" class="hidden text-sm"></p>
+
+      <div class="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-5">
+        <button type="button" id="key-delete" class="btn-ghost h-9 px-3 text-xs"><i data-lucide="trash-2" class="size-3.5"></i> Supprimer la clé</button>
+        <div class="flex gap-2">
+          <button type="button" id="key-test" class="btn-outline h-10 px-4"><i data-lucide="plug-zap" class="size-4"></i> Tester</button>
+          <button type="submit" id="key-save" class="btn-primary h-10 px-4">Enregistrer</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>
